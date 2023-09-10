@@ -9,7 +9,7 @@ import (
 type WorkReport struct {
 	BatchSize, Success, Skip int
 	Retry, Failure           RetryFailureReport
-	HandlingErrors           []HandlingError
+	HandlerErrors            []HandlerError
 }
 
 type RetryFailureReport struct {
@@ -22,12 +22,12 @@ type MessageReport struct {
 	Error     error
 }
 
-func generateReport(event *events.SQSEvent, results map[Status][]Result, errs []HandlingError) (WorkReport, error) {
+func generateReport(event *events.SQSEvent, results map[Status][]Result, errs []HandlerError) (WorkReport, error) {
 	report := WorkReport{
-		BatchSize:      len(event.Records),
-		Success:        len(results[Success]),
-		Skip:           len(results[Skip]),
-		HandlingErrors: errs,
+		BatchSize:     len(event.Records),
+		Success:       len(results[Success]),
+		Skip:          len(results[Skip]),
+		HandlerErrors: errs,
 	}
 
 	hasRetry := results[Retry] != nil
