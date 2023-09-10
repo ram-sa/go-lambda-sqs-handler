@@ -5,6 +5,15 @@ import (
 	"gopkg.in/go-playground/validator.v9"
 )
 
+type Status string
+
+const (
+	Failure Status = "FAILURE"
+	Retry   Status = "RETRY"
+	Skip    Status = "SKIP"
+	Success Status = "SUCCESS"
+)
+
 type Result struct {
 	Message *events.SQSMessage
 	Status  Status `validate:"oneof=FAILURE RETRY SKIP SUCCESS"`
