@@ -55,7 +55,7 @@ func NewBatchHandler(c context.Context, failureDlqURL string, discardUnhandleabl
 		Context:             c,
 		DiscardUnhandleable: discardUnhandleable,
 		FailureDlqURL:       failureDlqURL,
-		//SQSClient: ,
+		// TODO SQSClient: ,
 	}
 }
 
@@ -77,8 +77,11 @@ out:
 			break out
 		default:
 			r := <-ch
-			// TODO Call r.Validate before mapping value and wrap errors
-			// 'https://go.dev/doc/go1.20#errors'
+			// Invalid status are handled as failures
+			if err := r.Validate(); err != nil {
+				r.Error = errors.Join(r.Error, fmt.Errorf("invalid status property `%v`", r.Status))
+				r.Status = Failure
+			}
 			results[r.Status] = append(results[r.Status], r)
 		}
 	}
