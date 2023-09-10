@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -17,7 +18,7 @@ type BatchHandler struct {
 	BackOffSettings     BackOffSettings
 	Context             context.Context
 	DiscardUnhandleable bool
-	FailureDlqUrl       string
+	FailureDlqURL       string
 	SQSClient           sqs.Client
 }
 
@@ -33,45 +34,97 @@ const (
 	DefaultRandFactor = 0.3
 )
 
-type HandlingError struct {
+type HandlerError struct {
 	MessageId string
 	Status    Status
 	Error     error
+}
+
+func NewBackOffSettings() BackOffSettings {
+	return BackOffSettings{
+		InitTimeoutSec: DefaultIniTimeout,
+		MaxTimeoutSec:  DefaultMaxTimeout,
+		Multiplier:     DefaultMultiplier,
+		RandFactor:     DefaultRandFactor,
+	}
+}
+
+func NewBatchHandler(c context.Context, failureDlqURL string, discardUnhandleable bool) *BatchHandler {
+	return &BatchHandler{
+		BackOffSettings:     NewBackOffSettings(),
+		Context:             c,
+		DiscardUnhandleable: discardUnhandleable,
+		FailureDlqURL:       failureDlqURL,
+		//SQSClient: ,
+	}
 }
 
 func (b *BatchHandler) HandleEvent(event *events.SQSEvent, worker Worker) (WorkReport, error) {
 	len := len(event.Records)
 	ch := make(chan Result, len)
 	results := make(map[Status][]Result)
+	timeout := setTimeout(b.Context)
 
-	// TODO pass context to stop execution
-	// TODO defer to failure on panic
 	for _, msg := range event.Records {
-		go func(msg *events.SQSMessage) {
-			ch <- worker.Work(msg)
-		}(&msg)
+		go wrapWorker(b.Context, &msg, worker, ch)
 	}
 
+out:
 	for i := 0; i < len; i++ {
-		r := <-ch
-		// TODO Call r.Validate before mapping value and wrap errors
-		// 'https://go.dev/doc/go1.20#errors'
-		results[r.Status] = append(results[r.Status], r)
+		select {
+		case <-timeout:
+			fmt.Println(errors.New("the lambda function timed out"))
+			break out
+		default:
+			r := <-ch
+			// TODO Call r.Validate before mapping value and wrap errors
+			// 'https://go.dev/doc/go1.20#errors'
+			results[r.Status] = append(results[r.Status], r)
+		}
 	}
 
 	errs := b.handleResults(results)
 	return generateReport(event, results, errs)
 }
 
+// Sets a deadline for processing results
+func setTimeout(c context.Context) <-chan time.Time {
+	deadline, ok := c.Deadline()
+	if !ok {
+		// Defaults to 15 minutes (lambda max)
+		deadline = time.Now().Add(15 * time.Minute)
+	}
+	// Reserves 5 seconds for processing results
+	deadline = deadline.Add(-5 * time.Second)
+
+	return time.After(time.Until(deadline))
+}
+
+// Wraps the custom worker function in order to recover from panics
+func wrapWorker(c context.Context, msg *events.SQSMessage, worker Worker, ch chan<- Result) {
+	defer func(ch chan<- Result) {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("worker panic:\n%v", r)
+			ch <- Result{
+				Message: msg,
+				Status:  Failure,
+				Error:   err,
+			}
+		}
+	}(ch)
+
+	ch <- worker.Work(c, msg)
+}
+
 // Process the worker's results and handles them accordingly.
-func (b *BatchHandler) handleResults(results map[Status][]Result) []HandlingError {
+func (b *BatchHandler) handleResults(results map[Status][]Result) []HandlerError {
 	// If there are no Retries or Failures there's no reason to manually delete
 	// messages from the queue, as we can just report a success to the lambda framework.
 	if results[Retry] == nil && results[Failure] == nil {
 		return nil
 	}
 
-	var errs []HandlingError
+	var errs []HandlerError
 
 	if results[Retry] != nil {
 		errs = append(errs, b.handleRetries(results[Retry])...)
@@ -86,8 +139,8 @@ func (b *BatchHandler) handleResults(results map[Status][]Result) []HandlingErro
 
 // Handles transient errors by altering a message's VisibilityTimeout with an
 // exponential backoff value.
-func (b *BatchHandler) handleRetries(results []Result) []HandlingError {
-	var errs []HandlingError
+func (b *BatchHandler) handleRetries(results []Result) []HandlerError {
+	var errs []HandlerError
 
 	for _, r := range results {
 		v, err := b.getNewVisibility(r.Message)
@@ -97,13 +150,13 @@ func (b *BatchHandler) handleRetries(results []Result) []HandlingError {
 		}
 
 		if err != nil {
-			errs = append(errs, HandlingError{
+			errs = append(errs, HandlerError{
 				MessageId: r.Message.MessageId,
 				Status:    r.Status,
 				Error:     err,
 			})
 			if err = b.solveUnhandleable(r.Message); err != nil {
-				errs = append(errs, HandlingError{
+				errs = append(errs, HandlerError{
 					MessageId: r.Message.MessageId,
 					Status:    r.Status,
 					Error:     err,
@@ -117,19 +170,19 @@ func (b *BatchHandler) handleRetries(results []Result) []HandlingError {
 
 // Handles unrecoverable errors by removing said messages from the queue and sending
 // them to a designated DLQ, if available.
-func (b *BatchHandler) handleFailures(results []Result) []HandlingError {
-	var errs []HandlingError
+func (b *BatchHandler) handleFailures(results []Result) []HandlerError {
+	var errs []HandlerError
 
 	for _, r := range results {
-		if b.FailureDlqUrl != "" {
-			if err := b.sendMessage(r.Message, &b.FailureDlqUrl); err != nil {
-				errs = append(errs, HandlingError{
+		if b.FailureDlqURL != "" {
+			if err := b.sendMessage(r.Message, &b.FailureDlqURL); err != nil {
+				errs = append(errs, HandlerError{
 					MessageId: r.Message.MessageId,
 					Status:    r.Status,
 					Error:     err,
 				})
 				if err = b.solveUnhandleable(r.Message); err != nil {
-					errs = append(errs, HandlingError{
+					errs = append(errs, HandlerError{
 						MessageId: r.Message.MessageId,
 						Status:    r.Status,
 						Error:     err,
@@ -139,7 +192,7 @@ func (b *BatchHandler) handleFailures(results []Result) []HandlingError {
 		}
 
 		if err := b.deleteMessage(r.Message); err != nil {
-			errs = append(errs, HandlingError{
+			errs = append(errs, HandlerError{
 				MessageId: r.Message.MessageId,
 				Status:    r.Status,
 				Error:     err,
@@ -159,12 +212,12 @@ func (b *BatchHandler) handleFailures(results []Result) []HandlingError {
 
 // Handles skipped or succesfully processed messages by removing them from the queue.
 // Called when part of the batch encountered errors.
-func (b *BatchHandler) handleSkipsOrSuccesses(results []Result) []HandlingError {
-	var errs []HandlingError
+func (b *BatchHandler) handleSkipsOrSuccesses(results []Result) []HandlerError {
+	var errs []HandlerError
 
 	for _, r := range results {
 		if err := b.deleteMessage(r.Message); err != nil {
-			errs = append(errs, HandlingError{
+			errs = append(errs, HandlerError{
 				MessageId: r.Message.MessageId,
 				Status:    r.Status,
 				Error:     err,

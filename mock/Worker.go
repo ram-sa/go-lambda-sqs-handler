@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
+
 	"github.com/aws/aws-lambda-go/events"
 )
 
 type Worker interface {
-	Work(*events.SQSMessage) Result
+	Work(context.Context, *events.SQSMessage) Result
 }
