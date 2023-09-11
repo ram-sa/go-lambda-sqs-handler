@@ -4,22 +4,30 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
+
+type SQSClient interface {
+	ChangeMessageVisibility(context.Context, *sqs.ChangeMessageVisibilityInput, ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
+	DeleteMessage(context.Context, *sqs.DeleteMessageInput, ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
+	SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
+}
 
 type BatchHandler struct {
 	BackOffSettings     BackOffSettings
 	Context             context.Context
 	DiscardUnhandleable bool
 	FailureDlqURL       string
-	SQSClient           sqs.Client
+	SQSClient           SQSClient
 }
 
 type BackOffSettings struct {
@@ -49,13 +57,22 @@ func NewBackOffSettings() BackOffSettings {
 	}
 }
 
-func NewBatchHandler(c context.Context, failureDlqURL string, discardUnhandleable bool) *BatchHandler {
+func NewBatchHandler(c context.Context, failureDlqURL string, discardUnhandleable bool, sqsClient SQSClient) *BatchHandler {
 	return &BatchHandler{
 		BackOffSettings:     NewBackOffSettings(),
 		Context:             c,
 		DiscardUnhandleable: discardUnhandleable,
 		FailureDlqURL:       failureDlqURL,
-		// TODO SQSClient: ,
+		SQSClient: func(client SQSClient, c context.Context) SQSClient {
+			if client != nil {
+				return client
+			}
+			cfg, err := config.LoadDefaultConfig(c)
+			if err != nil {
+				log.Fatalf("unable to load SDK config, %v", err)
+			}
+			return sqs.NewFromConfig(cfg)
+		}(sqsClient, c),
 	}
 }
 
