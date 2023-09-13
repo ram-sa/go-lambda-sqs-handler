@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
-	. "github.com/ram-sa/go-sqs-batch-handle"
+	. "github.com/ram-sa/go-sqs-batch-handler"
 )
 
 // TODO rearrange to proper file structure
