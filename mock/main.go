@@ -4,32 +4,58 @@ package main
 // deploy the package using the included script `deploy.sh`
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	. "github.com/ram-sa/go-sqs-batch-handle"
 )
 
 // TODO rearrange to proper file structure
+// TODO decide if DeleteUnhandleable is worth it or not
 // TODO test functions
 // TODO doc everything `https://medium.com/@helbingxxx/how-to-write-go-doc-comments-421e0ca85996`
-// TODO learn to, and then publish package
-// TODO test if pointers are faster than values as arguments
+// TODO learn how to, and then publish the package
 // TODO add batching?
 
 func main() {
 	//lambda.Start(HandleRequest)
-	simulateEvent()
+	//simulateEvent()
+	//deferTest()
 }
 
-// *** Uncomment handler when uploading lambda code *** //
-//func handleRequest(ctx context.Context, sqsEvent events.SQSEvent) error {
-//	return nil
-//}
+/**** Uncomment handler when uploading lambda code
+func handleRequest(ctx context.Context, sqsEvent events.SQSEvent) error {
+	return nil
+}
+****/
 
 // test stuffs
+
+// Tests a defer during a go routine
+func deferTest() {
+	ch := make(chan int)
+	go recoverMe(ch)
+	fmt.Printf("I'm recovered! %v\n", <-ch)
+}
+
+func recoverMe(pork chan<- int) {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Println("Recovering from", r)
+		}
+		pork <- 1
+	}()
+	panicker()
+}
+
+func panicker() {
+	log.Panic("I'm panicking!\n")
+}
 
 // Simulates an SQSEvent and some work. Alter as needed.
 // `https://github.com/aws/aws-lambda-go/blob/main/events/testdata/sqs-event.json`
@@ -52,7 +78,7 @@ func simulateEvent() {
 	fmt.Printf("Execution Ceiling (s): %v\n", worker.ExecCeiling-1)
 	fmt.Printf("Messages: %v\n", len(messages))
 
-	b := BatchHandler{}
+	b := NewBatchHandler(context.TODO(), "", false, nil)
 	b.HandleEvent(&event, worker)
 	//m, _ := HandleEvent(event, WorkerImp{})
 	//json, _ := json.MarshalIndent(m, "", "\t")
@@ -71,7 +97,7 @@ type WorkerImp struct {
 
 // Simulates some work and generates a randomized [Report] value,
 // including an error if the value is "Failure".
-func (w WorkerImp) Work(m *events.SQSMessage) Result {
+func (w WorkerImp) Work(c context.Context, m *events.SQSMessage) Result {
 	reports := []Status{Failure, Retry, Skip, Success}
 	r := reports[rand.Intn(len(reports))]
 	var e error = nil
