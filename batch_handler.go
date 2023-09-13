@@ -24,11 +24,10 @@ type SQSClient interface {
 }
 
 type BatchHandler struct {
-	BackOffSettings     BackOffSettings
-	Context             context.Context
-	DiscardUnhandleable bool
-	FailureDlqURL       string
-	SQSClient           SQSClient
+	BackOffSettings BackOffSettings
+	Context         context.Context
+	FailureDlqURL   string
+	SQSClient       SQSClient
 }
 
 type BackOffSettings struct {
@@ -58,12 +57,11 @@ func NewBackOffSettings() BackOffSettings {
 	}
 }
 
-func NewBatchHandler(c context.Context, failureDlqURL string, discardUnhandleable bool, sqsClient SQSClient) *BatchHandler {
+func NewBatchHandler(c context.Context, failureDlqURL string, sqsClient SQSClient) *BatchHandler {
 	return &BatchHandler{
-		BackOffSettings:     NewBackOffSettings(),
-		Context:             c,
-		DiscardUnhandleable: discardUnhandleable,
-		FailureDlqURL:       failureDlqURL,
+		BackOffSettings: NewBackOffSettings(),
+		Context:         c,
+		FailureDlqURL:   failureDlqURL,
 		SQSClient: func(client SQSClient, c context.Context) SQSClient {
 			if client != nil {
 				return client
@@ -176,13 +174,6 @@ func (b *BatchHandler) handleRetries(results []Result) []HandlerError {
 				Status:    r.Status,
 				Error:     err,
 			})
-			if err = b.solveUnhandleable(r.Message); err != nil {
-				errs = append(errs, HandlerError{
-					MessageId: r.Message.MessageId,
-					Status:    r.Status,
-					Error:     err,
-				})
-			}
 		}
 	}
 
@@ -202,13 +193,6 @@ func (b *BatchHandler) handleFailures(results []Result) []HandlerError {
 					Status:    r.Status,
 					Error:     err,
 				})
-				if err = b.solveUnhandleable(r.Message); err != nil {
-					errs = append(errs, HandlerError{
-						MessageId: r.Message.MessageId,
-						Status:    r.Status,
-						Error:     err,
-					})
-				}
 			}
 		}
 
@@ -330,15 +314,6 @@ func (b *BatchHandler) sendMessage(message *events.SQSMessage, url *string) erro
 		QueueUrl: url,
 	})
 	return err
-}
-
-// Removes the message from the queue if [BatchHandler.DiscardUnhandleable]
-// is set.
-func (b *BatchHandler) solveUnhandleable(message *events.SQSMessage) error {
-	if !b.DiscardUnhandleable {
-		return nil
-	}
-	return b.deleteMessage(message)
 }
 
 // Builds a queue URL from its ARN

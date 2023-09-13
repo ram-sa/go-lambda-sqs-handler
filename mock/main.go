@@ -78,7 +78,7 @@ func simulateEvent() {
 	fmt.Printf("Execution Ceiling (s): %v\n", worker.ExecCeiling-1)
 	fmt.Printf("Messages: %v\n", len(messages))
 
-	b := NewBatchHandler(context.TODO(), "", false, nil)
+	b := NewBatchHandler(context.TODO(), "", nil)
 	b.HandleEvent(&event, worker)
 	//m, _ := HandleEvent(event, WorkerImp{})
 	//json, _ := json.MarshalIndent(m, "", "\t")
