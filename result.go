@@ -20,7 +20,7 @@ type Result struct {
 	Error   error
 }
 
-func (r *Result) Validate() error {
+func (r *Result) validate() error {
 	validate := validator.New()
 	return validate.Struct(r)
 }

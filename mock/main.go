@@ -106,5 +106,5 @@ func (w WorkerImp) Work(c context.Context, m *events.SQSMessage) Result {
 	}
 	sDur := rand.Intn(w.ExecCeiling)
 	time.Sleep(time.Second * time.Duration(sDur))
-	return Result{m, r, e}
+	return Result{Message: m, Status: r, Error: e}
 }

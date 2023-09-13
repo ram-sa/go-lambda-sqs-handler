@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
+// Interface to enable mocking of a SQSClient, when necessary
 type SQSClient interface {
 	ChangeMessageVisibility(context.Context, *sqs.ChangeMessageVisibilityInput, ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
 	DeleteMessage(context.Context, *sqs.DeleteMessageInput, ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
@@ -95,7 +96,7 @@ out:
 		default:
 			r := <-ch
 			// Invalid status are handled as failures
-			if err := r.Validate(); err != nil {
+			if err := r.validate(); err != nil {
 				r.Error = errors.Join(r.Error, fmt.Errorf("invalid status property `%v`", r.Status))
 				r.Status = Failure
 			}
