@@ -7,5 +7,5 @@ import (
 )
 
 type Worker interface {
-	Work(context.Context, *events.SQSMessage) Result
+	Work(context.Context, events.SQSMessage) Result
 }

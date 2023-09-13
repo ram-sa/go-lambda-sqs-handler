@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
+	"github.com/aws/aws-lambda-go/lambda"
 	. "github.com/ram-sa/go-sqs-batch-handler"
 )
 
@@ -22,17 +24,34 @@ import (
 // TODO learn how to, and then publish the package
 // TODO add batching?
 
+type WorkerTest struct{}
+
+func (w WorkerTest) Work(c context.Context, m events.SQSMessage) Result {
+	switch m.Body {
+	case "Failure":
+		return Result{Message: m, Status: Failure, Error: errors.New("some error")}
+	case "Retry":
+		return Result{Message: m, Status: Retry, Error: errors.New("some transient error")}
+	case "Skip":
+		return Result{Message: m, Status: Skip}
+	default:
+		return Result{Message: m, Status: Success}
+	}
+}
+
 func main() {
-	//lambda.Start(HandleRequest)
+	lambda.Start(handleRequest)
 	//simulateEvent()
 	//deferTest()
 }
 
-/**** Uncomment handler when uploading lambda code
-func handleRequest(ctx context.Context, sqsEvent events.SQSEvent) error {
-	return nil
+/**** Uncomment handler when uploading lambda code ****/
+func handleRequest(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
+	handler := NewBatchHandler(ctx, "", nil)
+	return handler.HandleEvent(&sqsEvent, WorkerTest{})
 }
-****/
+
+/****/
 
 // test stuffs
 
@@ -65,10 +84,10 @@ func simulateEvent() {
 	event := events.SQSEvent{}
 	messages := []events.SQSMessage{
 		{}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-		{}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-		{}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-		{}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-		{}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+		//		{}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+		//		{}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+		//		{}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+		//		{}, {}, {}, {}, {}, {}, {}, {}, {}, {},
 	}
 	event.Records = append(event.Records, messages...)
 	worker := WorkerImp{ExecCeiling: 6}
@@ -79,14 +98,17 @@ func simulateEvent() {
 	fmt.Printf("Messages: %v\n", len(messages))
 
 	b := NewBatchHandler(context.TODO(), "", nil)
-	b.HandleEvent(&event, worker)
+	r, e := b.HandleEvent(&event, worker)
 	//m, _ := HandleEvent(event, WorkerImp{})
 	//json, _ := json.MarshalIndent(m, "", "\t")
 	//fmt.Println(string(json))
 
 	eTime := time.Now()
 	fmt.Printf("Finished execution at %v\n", eTime.Format(time.TimeOnly))
-	fmt.Printf("Duration: %v\n", eTime.Sub(sTime))
+	fmt.Printf("Duration: %v\n\n\n", eTime.Sub(sTime))
+
+	json, _ := json.MarshalIndent(r, "", "	")
+	fmt.Printf("%s\n%v", json, e)
 }
 
 // Type used to test the [Worker] interface
@@ -97,8 +119,8 @@ type WorkerImp struct {
 
 // Simulates some work and generates a randomized [Report] value,
 // including an error if the value is "Failure".
-func (w WorkerImp) Work(c context.Context, m *events.SQSMessage) Result {
-	reports := []Status{Failure, Retry, Skip, Success}
+func (w WorkerImp) Work(c context.Context, m events.SQSMessage) Result {
+	reports := []Status{Failure, Skip, Success}
 	r := reports[rand.Intn(len(reports))]
 	var e error = nil
 	if r == Failure {

@@ -1,67 +1,77 @@
 package handler
 
 import (
-	"errors"
+	"encoding/json"
+	"fmt"
 
 	"github.com/aws/aws-lambda-go/events"
 )
 
 type WorkReport struct {
-	BatchSize, Success, Skip int
-	Retry, Failure           RetryFailureReport
-	HandlerErrors            []HandlerError
+	BatchSize     int                 `json:"batchSize"`
+	Success       int                 `json:"success,omitempty"`
+	Skip          int                 `json:"skip,omitempty"`
+	Retry         *RetryFailureReport `json:"retry,omitempty"`
+	Failure       *RetryFailureReport `json:"failure,omitempty"`
+	HandlerErrors []ErrorReport       `json:"handlerErrors,omitempty"`
 }
 
 type RetryFailureReport struct {
-	Count  int
-	Errors []MessageReport
+	Count  int           `json:"count"`
+	Errors []ErrorReport `json:"errors"`
 }
 
-type MessageReport struct {
-	MessageId string
-	Error     error
+type ErrorReport struct {
+	MessageId string `json:"messageId"`
+	Error     string `json:"error"`
 }
 
-func generateReport(event *events.SQSEvent, results map[Status][]Result, errs []HandlerError) (WorkReport, error) {
+func printReport(event *events.SQSEvent, results map[Status][]Result, hErrs []HandlerError) {
 	report := WorkReport{
 		BatchSize:     len(event.Records),
 		Success:       len(results[Success]),
 		Skip:          len(results[Skip]),
-		HandlerErrors: errs,
+		HandlerErrors: errorToReport(hErrs),
 	}
 
-	hasRetry := results[Retry] != nil
-	hasFailure := results[Failure] != nil
-
-	if hasRetry {
-		report.Retry = RetryFailureReport{
-			Count:  len(results[Retry]),
-			Errors: convertReport(results[Retry]),
-		}
-	}
-	if hasFailure {
-		report.Failure = RetryFailureReport{
+	if results[Failure] != nil {
+		report.Failure = &RetryFailureReport{
 			Count:  len(results[Failure]),
-			Errors: convertReport(results[Failure]),
+			Errors: resultToReport(results[Failure]),
 		}
 	}
 
-	err := func(hasError bool) error {
-		if hasError {
-			return errors.New("worker reported errors while processing message batch")
+	if results[Retry] != nil {
+		report.Retry = &RetryFailureReport{
+			Count:  len(results[Retry]),
+			Errors: resultToReport(results[Retry]),
 		}
-		return nil
-	}(hasRetry || hasFailure || len(errs) > 0)
+	}
 
-	return report, err
+	if json, err := json.Marshal(report); err == nil {
+		fmt.Printf("%s\n", json)
+	} else {
+		fmt.Printf("unable to print report: %v", err)
+	}
 }
 
-func convertReport(results []Result) []MessageReport {
-	conv := make([]MessageReport, len(results))
+func resultToReport(results []Result) []ErrorReport {
+	conv := make([]ErrorReport, len(results))
 	for i, r := range results {
-		conv[i] = MessageReport{
+		conv[i] = ErrorReport{
 			MessageId: r.Message.MessageId,
-			Error:     r.Error,
+			Error:     r.Error.Error(),
+		}
+	}
+	return conv
+}
+
+func errorToReport(errors []HandlerError) []ErrorReport {
+	conv := make([]ErrorReport, len(errors))
+	for i, r := range errors {
+		conv[i] = ErrorReport{
+			MessageId: r.MessageId,
+			Error:     r.Error.Error(),
 		}
 	}
 	return conv

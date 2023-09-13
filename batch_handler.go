@@ -19,7 +19,6 @@ import (
 // Interface to enable mocking of a SQSClient, when necessary
 type SQSClient interface {
 	ChangeMessageVisibility(context.Context, *sqs.ChangeMessageVisibilityInput, ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
-	DeleteMessage(context.Context, *sqs.DeleteMessageInput, ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
 	SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
 }
 
@@ -44,7 +43,6 @@ const (
 
 type HandlerError struct {
 	MessageId string
-	Status    Status
 	Error     error
 }
 
@@ -75,14 +73,14 @@ func NewBatchHandler(c context.Context, failureDlqURL string, sqsClient SQSClien
 	}
 }
 
-func (b *BatchHandler) HandleEvent(event *events.SQSEvent, worker Worker) (WorkReport, error) {
+func (b *BatchHandler) HandleEvent(event *events.SQSEvent, worker Worker) (events.SQSEventResponse, error) {
 	len := len(event.Records)
 	ch := make(chan Result, len)
 	results := make(map[Status][]Result)
 	timeout := setTimeout(b.Context)
 
 	for _, msg := range event.Records {
-		go wrapWorker(b.Context, &msg, worker, ch)
+		go wrapWorker(b.Context, msg, worker, ch)
 	}
 
 out:
@@ -102,8 +100,13 @@ out:
 		}
 	}
 
-	errs := b.handleResults(results)
-	return generateReport(event, results, errs)
+	res, hErrs := b.handleResults(results)
+	printReport(event, results, hErrs)
+
+	// for debug
+	fmt.Println(res)
+
+	return res, nil
 }
 
 // Sets a deadline for processing results
@@ -120,7 +123,7 @@ func setTimeout(c context.Context) <-chan time.Time {
 }
 
 // Wraps the custom worker function in order to recover from panics
-func wrapWorker(c context.Context, msg *events.SQSMessage, worker Worker, ch chan<- Result) {
+func wrapWorker(c context.Context, msg events.SQSMessage, worker Worker, ch chan<- Result) {
 	defer func(ch chan<- Result) {
 		if r := recover(); r != nil {
 			err := fmt.Errorf("worker panic:\n%v", r)
@@ -131,37 +134,43 @@ func wrapWorker(c context.Context, msg *events.SQSMessage, worker Worker, ch cha
 			}
 		}
 	}(ch)
-
 	ch <- worker.Work(c, msg)
 }
 
-// Process the worker's results and handles them accordingly.
-func (b *BatchHandler) handleResults(results map[Status][]Result) []HandlerError {
-	// If there are no Retries or Failures there's no reason to manually delete
-	// messages from the queue, as we can just report a success to the lambda framework.
+// Process the worker's results and handles them accordingly, returning an SQSEventResponse
+// containing any messages from the batch that need to be reprocessed.
+func (b *BatchHandler) handleResults(results map[Status][]Result) (events.SQSEventResponse, []HandlerError) {
+	// If there are no Retries or Failures there's no reason to iterate through the
+	// results, as we can just report a success to the lambda framework.
 	if results[Retry] == nil && results[Failure] == nil {
-		return nil
+		return events.SQSEventResponse{}, nil
 	}
 
-	var errs []HandlerError
+	var hErrs []HandlerError
+
+	if results[Failure] != nil {
+		hErrs = append(hErrs, b.handleFailures(results[Failure])...)
+	}
+
+	var res events.SQSEventResponse
 
 	if results[Retry] != nil {
-		errs = append(errs, b.handleRetries(results[Retry])...)
-	} else if results[Failure] != nil {
-		errs = append(errs, b.handleFailures(results[Failure])...)
+		rHErrs, items := b.handleRetries(results[Retry])
+		res.BatchItemFailures = items
+		hErrs = append(hErrs, rHErrs...)
 	}
-	ss := append(results[Skip], results[Success]...)
-	errs = append(errs, b.handleSkipsOrSuccesses(ss)...)
 
-	return errs
+	return res, hErrs //, err
 }
 
 // Handles transient errors by altering a message's VisibilityTimeout with an
 // exponential backoff value.
-func (b *BatchHandler) handleRetries(results []Result) []HandlerError {
+func (b *BatchHandler) handleRetries(results []Result) ([]HandlerError, []events.SQSBatchItemFailure) {
+	s := len(results)
+	items := make([]events.SQSBatchItemFailure, s)
 	var errs []HandlerError
-
-	for _, r := range results {
+	for i, r := range results {
+		items[i] = events.SQSBatchItemFailure{ItemIdentifier: r.Message.MessageId}
 		v, err := b.getNewVisibility(r.Message)
 
 		if err == nil {
@@ -171,60 +180,27 @@ func (b *BatchHandler) handleRetries(results []Result) []HandlerError {
 		if err != nil {
 			errs = append(errs, HandlerError{
 				MessageId: r.Message.MessageId,
-				Status:    r.Status,
 				Error:     err,
 			})
 		}
 	}
 
-	return errs
+	return errs, items
 }
 
 // Handles unrecoverable errors by removing said messages from the queue and sending
 // them to a designated DLQ, if available.
 func (b *BatchHandler) handleFailures(results []Result) []HandlerError {
-	var errs []HandlerError
-
-	for _, r := range results {
-		if b.FailureDlqURL != "" {
-			if err := b.sendMessage(r.Message, &b.FailureDlqURL); err != nil {
-				errs = append(errs, HandlerError{
-					MessageId: r.Message.MessageId,
-					Status:    r.Status,
-					Error:     err,
-				})
-			}
-		}
-
-		if err := b.deleteMessage(r.Message); err != nil {
-			errs = append(errs, HandlerError{
-				MessageId: r.Message.MessageId,
-				Status:    r.Status,
-				Error:     err,
-			})
-		}
-
-		/**
-		b.solveUnhandleable isn't called here since it eithers leave the message as is
-		or attempts to delete it from the queue. If the previous delete failed, there's
-		little reason to believe that attempting it again will magically solve the issue,
-		as the AWS client already has built-in fallback functionality.
-		**/
+	if b.FailureDlqURL == "" {
+		return nil
 	}
 
-	return errs
-}
-
-// Handles skipped or succesfully processed messages by removing them from the queue.
-// Called when part of the batch encountered errors.
-func (b *BatchHandler) handleSkipsOrSuccesses(results []Result) []HandlerError {
 	var errs []HandlerError
 
 	for _, r := range results {
-		if err := b.deleteMessage(r.Message); err != nil {
+		if err := b.sendMessage(r.Message, &b.FailureDlqURL); err != nil {
 			errs = append(errs, HandlerError{
 				MessageId: r.Message.MessageId,
-				Status:    r.Status,
 				Error:     err,
 			})
 		}
@@ -234,7 +210,7 @@ func (b *BatchHandler) handleSkipsOrSuccesses(results []Result) []HandlerError {
 }
 
 // Creates a new visibility duration for the message.
-func (b *BatchHandler) getNewVisibility(e *events.SQSMessage) (int32, error) {
+func (b *BatchHandler) getNewVisibility(e events.SQSMessage) (int32, error) {
 	att, ok := e.Attributes["ApproximateReceiveCount"]
 	d, err := strconv.Atoi(att)
 	if !ok || err != nil {
@@ -268,7 +244,7 @@ func (b *BatchHandler) calculateBackoff(deliveries float64) int32 {
 
 // Requests the original SQS queue to change the message's
 // visibility timeout to the provided value.
-func (b *BatchHandler) changeVisibility(message *events.SQSMessage, newVisibility int32) error {
+func (b *BatchHandler) changeVisibility(message events.SQSMessage, newVisibility int32) error {
 	url, err := generateQueueUrl(message.EventSourceARN)
 	if err == nil {
 		_, err = b.SQSClient.ChangeMessageVisibility(b.Context, &sqs.ChangeMessageVisibilityInput{
@@ -281,21 +257,8 @@ func (b *BatchHandler) changeVisibility(message *events.SQSMessage, newVisibilit
 	return err
 }
 
-// Removes a message from the queue
-func (b *BatchHandler) deleteMessage(message *events.SQSMessage) error {
-	url, err := generateQueueUrl(message.EventSourceARN)
-	if err == nil {
-		_, err = b.SQSClient.DeleteMessage(b.Context, &sqs.DeleteMessageInput{
-			QueueUrl:      url,
-			ReceiptHandle: &message.ReceiptHandle,
-		})
-	}
-
-	return err
-}
-
 // Forwards a message to the designated queue
-func (b *BatchHandler) sendMessage(message *events.SQSMessage, url *string) error {
+func (b *BatchHandler) sendMessage(message events.SQSMessage, url *string) error {
 	_, err := b.SQSClient.SendMessage(b.Context, &sqs.SendMessageInput{
 		MessageBody: &message.Body,
 		MessageAttributes: func(m map[string]events.SQSMessageAttribute) map[string]types.MessageAttributeValue {
