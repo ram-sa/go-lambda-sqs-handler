@@ -16,7 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
-// Interface to enable mocking of a SQSClient, when necessary
+// Interface to enable mocking of a SQSClient, usually for testing purposes
 type SQSClient interface {
 	ChangeMessageVisibility(context.Context, *sqs.ChangeMessageVisibilityInput, ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
 	SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
@@ -34,6 +34,7 @@ type BackOffSettings struct {
 	Multiplier, RandFactor        float64
 }
 
+// Default values for BackOffSettings
 const (
 	DefaultIniTimeout = 5
 	DefaultMaxTimeout = 300
@@ -46,6 +47,7 @@ type HandlerError struct {
 	Error     error
 }
 
+// NewBackoffSettings creates an instance of BackOffSettings with default values
 func NewBackOffSettings() BackOffSettings {
 	return BackOffSettings{
 		InitTimeoutSec: DefaultIniTimeout,
@@ -55,21 +57,23 @@ func NewBackOffSettings() BackOffSettings {
 	}
 }
 
-func NewBatchHandler(c context.Context, failureDlqURL string, sqsClient SQSClient) *BatchHandler {
+/*
+NewBatchHandler creates an instance of BatchHandler with default values for
+exponential backoff on retries, no DLQ for failed messages and a sqs.Client
+with default configurations.
+*/
+func NewBatchHandler(c context.Context) *BatchHandler {
 	return &BatchHandler{
 		BackOffSettings: NewBackOffSettings(),
 		Context:         c,
-		FailureDlqURL:   failureDlqURL,
-		SQSClient: func(client SQSClient, c context.Context) SQSClient {
-			if client != nil {
-				return client
-			}
+		FailureDlqURL:   "",
+		SQSClient: func(c context.Context) SQSClient {
 			cfg, err := config.LoadDefaultConfig(c)
 			if err != nil {
 				log.Fatalf("unable to load SDK config, %v", err)
 			}
 			return sqs.NewFromConfig(cfg)
-		}(sqsClient, c),
+		}(c),
 	}
 }
 
@@ -80,7 +84,7 @@ func (b *BatchHandler) HandleEvent(event *events.SQSEvent, worker Worker) (event
 	timeout := setTimeout(b.Context)
 
 	for _, msg := range event.Records {
-		go wrapWorker(b.Context, msg, worker, ch)
+		go workWrapped(b.Context, msg, worker, ch)
 	}
 
 out:
@@ -128,7 +132,7 @@ func setTimeout(c context.Context) <-chan time.Time {
 }
 
 // Wraps the custom worker function in order to recover from panics
-func wrapWorker(c context.Context, msg events.SQSMessage, worker Worker, ch chan<- Result) {
+func workWrapped(c context.Context, msg events.SQSMessage, worker Worker, ch chan<- Result) {
 	defer func(ch chan<- Result) {
 		if r := recover(); r != nil {
 			err := fmt.Errorf("worker panic:\n%v", r)
@@ -176,7 +180,7 @@ func (b *BatchHandler) handleRetries(results []Result) ([]HandlerError, []events
 	var errs []HandlerError
 	for i, r := range results {
 		items[i] = events.SQSBatchItemFailure{ItemIdentifier: r.Message.MessageId}
-		v, err := b.getNewVisibility(r.Message)
+		v, err := b.newVisibilityVal(r.Message)
 
 		if err == nil {
 			err = b.changeVisibility(r.Message, v)
@@ -215,7 +219,7 @@ func (b *BatchHandler) handleFailures(results []Result) []HandlerError {
 }
 
 // Creates a new visibility duration for the message.
-func (b *BatchHandler) getNewVisibility(e *events.SQSMessage) (int32, error) {
+func (b *BatchHandler) newVisibilityVal(e *events.SQSMessage) (int32, error) {
 	att, ok := e.Attributes["ApproximateReceiveCount"]
 	d, err := strconv.Atoi(att)
 	if !ok || err != nil {
@@ -226,10 +230,12 @@ func (b *BatchHandler) getNewVisibility(e *events.SQSMessage) (int32, error) {
 	return nVis, nil
 }
 
-// Calculates an exponential backoff based on the values configured
-// in [BackoffSettings] and how many delivery attempts have occurred,
-// then adds in jitter in the range set in [BackoffSettings.RandFactor].
-// Based on `https://github.com/cenkalti/backoff/blob/v4/exponential.go#L149`
+/*
+Calculates an exponential backoff based on the values configured
+in BackoffSettings and how many delivery attempts have occurred,
+then adds in jitter in the range set in BackoffSettings.RandFactor.
+Based on `https://github.com/cenkalti/backoff/blob/v4/exponential.go#L149`
+*/
 func (b *BatchHandler) calculateBackoff(deliveries float64) int32 {
 	s := b.BackOffSettings
 	bo := int32(float64(s.InitTimeoutSec) * s.Multiplier * deliveries)
