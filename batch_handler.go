@@ -89,9 +89,7 @@ out:
 		case <-timeout:
 			fmt.Println(errors.New("the lambda function timed out"))
 			break out
-		default:
-			r := <-ch
-
+		case r := <-ch:
 			// Invalid status are handled as failures
 			if err := r.validate(); err == nil {
 				results[r.Status] = append(results[r.Status], r)
