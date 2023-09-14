@@ -17,25 +17,28 @@ import (
 	. "github.com/ram-sa/go-sqs-batch-handler"
 )
 
-// TODO rearrange to proper file structure
-// TODO decide if DeleteUnhandleable is worth it or not
+// OK TODO rearrange to proper file structure
+// OK TODO decide if DeleteUnhandleable is worth it or not
+// TODO Add debugging logs
 // TODO test functions
 // TODO doc everything `https://medium.com/@helbingxxx/how-to-write-go-doc-comments-421e0ca85996`
 // TODO learn how to, and then publish the package
-// TODO add batching?
 
 type WorkerTest struct{}
 
 func (w WorkerTest) Work(c context.Context, m events.SQSMessage) Result {
 	switch m.Body {
 	case "Failure":
-		return Result{Message: m, Status: Failure, Error: errors.New("some error")}
+		return Result{Message: &m, Status: Failure, Error: errors.New("some error")}
 	case "Retry":
-		return Result{Message: m, Status: Retry, Error: errors.New("some transient error")}
+		return Result{Message: &m, Status: Retry, Error: errors.New("some transient error")}
 	case "Skip":
-		return Result{Message: m, Status: Skip}
+		return Result{Message: &m, Status: Skip}
+	case "Timeout":
+		time.Sleep(time.Second * 11)
+		return Result{Message: &m, Status: Success}
 	default:
-		return Result{Message: m, Status: Success}
+		return Result{Message: &m, Status: Success}
 	}
 }
 
@@ -128,5 +131,5 @@ func (w WorkerImp) Work(c context.Context, m events.SQSMessage) Result {
 	}
 	sDur := rand.Intn(w.ExecCeiling)
 	time.Sleep(time.Second * time.Duration(sDur))
-	return Result{Message: m, Status: r, Error: e}
+	return Result{Message: &m, Status: r, Error: e}
 }

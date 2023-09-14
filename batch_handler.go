@@ -91,22 +91,29 @@ out:
 			break out
 		default:
 			r := <-ch
+
 			// Invalid status are handled as failures
-			if err := r.validate(); err != nil {
-				r.Error = errors.Join(r.Error, fmt.Errorf("invalid status property `%v`", r.Status))
-				r.Status = Failure
+			if err := r.validate(); err == nil {
+				results[r.Status] = append(results[r.Status], r)
+			} else {
+				if r.Message != nil {
+					r.Error = errors.Join(r.Error, fmt.Errorf("invalid status property `%v`", r.Status))
+					r.Status = Failure
+					results[r.Status] = append(results[r.Status], r)
+				} else {
+					fmt.Println(errors.New("worker did not return a valid message"))
+				}
 			}
-			results[r.Status] = append(results[r.Status], r)
 		}
 	}
 
-	res, hErrs := b.handleResults(results)
+	eResp, hErrs := b.handleResults(results)
 	printReport(event, results, hErrs)
 
 	// for debug
-	fmt.Println(res)
+	fmt.Println(eResp)
 
-	return res, nil
+	return eResp, nil
 }
 
 // Sets a deadline for processing results
@@ -128,7 +135,7 @@ func wrapWorker(c context.Context, msg events.SQSMessage, worker Worker, ch chan
 		if r := recover(); r != nil {
 			err := fmt.Errorf("worker panic:\n%v", r)
 			ch <- Result{
-				Message: msg,
+				Message: &msg,
 				Status:  Failure,
 				Error:   err,
 			}
@@ -210,7 +217,7 @@ func (b *BatchHandler) handleFailures(results []Result) []HandlerError {
 }
 
 // Creates a new visibility duration for the message.
-func (b *BatchHandler) getNewVisibility(e events.SQSMessage) (int32, error) {
+func (b *BatchHandler) getNewVisibility(e *events.SQSMessage) (int32, error) {
 	att, ok := e.Attributes["ApproximateReceiveCount"]
 	d, err := strconv.Atoi(att)
 	if !ok || err != nil {
@@ -244,7 +251,7 @@ func (b *BatchHandler) calculateBackoff(deliveries float64) int32 {
 
 // Requests the original SQS queue to change the message's
 // visibility timeout to the provided value.
-func (b *BatchHandler) changeVisibility(message events.SQSMessage, newVisibility int32) error {
+func (b *BatchHandler) changeVisibility(message *events.SQSMessage, newVisibility int32) error {
 	url, err := generateQueueUrl(message.EventSourceARN)
 	if err == nil {
 		_, err = b.SQSClient.ChangeMessageVisibility(b.Context, &sqs.ChangeMessageVisibilityInput{
@@ -258,7 +265,7 @@ func (b *BatchHandler) changeVisibility(message events.SQSMessage, newVisibility
 }
 
 // Forwards a message to the designated queue
-func (b *BatchHandler) sendMessage(message events.SQSMessage, url *string) error {
+func (b *BatchHandler) sendMessage(message *events.SQSMessage, url *string) error {
 	_, err := b.SQSClient.SendMessage(b.Context, &sqs.SendMessageInput{
 		MessageBody: &message.Body,
 		MessageAttributes: func(m map[string]events.SQSMessageAttribute) map[string]types.MessageAttributeValue {

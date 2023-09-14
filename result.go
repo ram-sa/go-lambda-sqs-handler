@@ -15,8 +15,8 @@ const (
 )
 
 type Result struct {
-	Message events.SQSMessage
-	Status  Status `validate:"oneof=FAILURE RETRY SKIP SUCCESS"`
+	Message *events.SQSMessage `validate:"required"`
+	Status  Status             `validate:"oneof=FAILURE RETRY SKIP SUCCESS"`
 	Error   error
 }
 
