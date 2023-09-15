@@ -15,7 +15,6 @@ type mockSQSClient struct {
 }
 
 func (m mockSQSClient) SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
-	m.SendInvoked++
 	var err error
 	if m.ReturnErrors {
 		err = errors.New("mocking generic error response")
@@ -23,7 +22,6 @@ func (m mockSQSClient) SendMessage(context.Context, *sqs.SendMessageInput, ...fu
 	return nil, err
 }
 func (m mockSQSClient) ChangeMessageVisibility(context.Context, *sqs.ChangeMessageVisibilityInput, ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error) {
-	m.ChangeVisInvoked++
 	var err error
 	if m.ReturnErrors {
 		err = errors.New("mocking generic error response")
@@ -69,33 +67,46 @@ func TestWorkWrapped_OnPanic_ReturnsFailedResult(t *testing.T) {
 
 func TestNewVisibilityVal_NoVisibilityAttribute_ReturnsError(t *testing.T) {
 	handler := BatchHandler{
-		Context:         context.TODO(),
-		BackOffSettings: NewBackOffSettings(),
-		FailureDlqURL:   "",
-		SQSClient:       mockSQSClient{},
+		Context:       context.TODO(),
+		BackOff:       NewBackOff(),
+		FailureDlqURL: "",
+		SQSClient:     mockSQSClient{},
 	}
 	message := events.SQSMessage{}
 
-	if _, err := handler.newVisibilityVal(&message); err == nil {
+	if _, err := handler.getVisibility(&message); err == nil {
 		t.Error("no error on invalid message attribute")
 	}
 }
 
-func TestNewVisibilityVal_InvalidVisibilityAttribute_ReturnsError(t *testing.T) {
+func TestNewVisibilityVal_UnableToParseVisibilityAttribute_ReturnsError(t *testing.T) {
 	handler := BatchHandler{
-		Context:         context.TODO(),
-		BackOffSettings: NewBackOffSettings(),
-		FailureDlqURL:   "",
-		SQSClient:       mockSQSClient{},
+		Context:       context.TODO(),
+		BackOff:       NewBackOff(),
+		FailureDlqURL: "",
+		SQSClient:     mockSQSClient{},
 	}
 	message := events.SQSMessage{}
 	message.Attributes = map[string]string{
 		"ApproximateReceiveCount": "invalid",
 	}
-	if _, err := handler.newVisibilityVal(&message); err == nil {
+	if _, err := handler.getVisibility(&message); err == nil {
 		t.Error("no error on invalid message attribute")
 	}
 }
 
-//calculateBackOff
-
+func TestNewVisibilityVal_AttributeSmalerThanOne_ReturnsError(t *testing.T) {
+	handler := BatchHandler{
+		Context:       context.TODO(),
+		BackOff:       NewBackOff(),
+		FailureDlqURL: "",
+		SQSClient:     mockSQSClient{},
+	}
+	message := events.SQSMessage{}
+	message.Attributes = map[string]string{
+		"ApproximateReceiveCount": "-1",
+	}
+	if _, err := handler.getVisibility(&message); err == nil {
+		t.Error("no error on invalid message attribute")
+	}
+}
