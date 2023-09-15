@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math/rand"
 	"strconv"
 	"strings"
 	"time"
@@ -16,45 +15,22 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
+type BatchHandler struct {
+	BackOff       BackOff
+	Context       context.Context
+	FailureDlqURL string
+	SQSClient     SQSClient
+}
+
 // Interface to enable mocking of a SQSClient, usually for testing purposes
 type SQSClient interface {
 	ChangeMessageVisibility(context.Context, *sqs.ChangeMessageVisibilityInput, ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
 	SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
 }
 
-type BatchHandler struct {
-	BackOffSettings BackOffSettings
-	Context         context.Context
-	FailureDlqURL   string
-	SQSClient       SQSClient
-}
-
-type BackOffSettings struct {
-	InitTimeoutSec, MaxTimeoutSec int32
-	Multiplier, RandFactor        float64
-}
-
-// Default values for BackOffSettings
-const (
-	DefaultIniTimeout = 5
-	DefaultMaxTimeout = 300
-	DefaultMultiplier = 2.5
-	DefaultRandFactor = 0.3
-)
-
 type HandlerError struct {
 	MessageId string
 	Error     error
-}
-
-// NewBackoffSettings creates an instance of BackOffSettings with default values
-func NewBackOffSettings() BackOffSettings {
-	return BackOffSettings{
-		InitTimeoutSec: DefaultIniTimeout,
-		MaxTimeoutSec:  DefaultMaxTimeout,
-		Multiplier:     DefaultMultiplier,
-		RandFactor:     DefaultRandFactor,
-	}
 }
 
 /*
@@ -64,9 +40,9 @@ with default configurations.
 */
 func NewBatchHandler(c context.Context) *BatchHandler {
 	return &BatchHandler{
-		BackOffSettings: NewBackOffSettings(),
-		Context:         c,
-		FailureDlqURL:   "",
+		BackOff:       NewBackOff(),
+		Context:       c,
+		FailureDlqURL: "",
 		SQSClient: func(c context.Context) SQSClient {
 			cfg, err := config.LoadDefaultConfig(c)
 			if err != nil {
@@ -178,9 +154,12 @@ func (b *BatchHandler) handleRetries(results []Result) ([]HandlerError, []events
 	s := len(results)
 	items := make([]events.SQSBatchItemFailure, s)
 	var errs []HandlerError
+
+	b.BackOff.validate()
+
 	for i, r := range results {
 		items[i] = events.SQSBatchItemFailure{ItemIdentifier: r.Message.MessageId}
-		v, err := b.newVisibilityVal(r.Message)
+		v, err := b.getVisibility(r.Message)
 
 		if err == nil {
 			err = b.changeVisibility(r.Message, v)
@@ -218,39 +197,16 @@ func (b *BatchHandler) handleFailures(results []Result) []HandlerError {
 	return errs
 }
 
-// Creates a new visibility duration for the message.
-func (b *BatchHandler) newVisibilityVal(e *events.SQSMessage) (int32, error) {
+// Retrieves a new visibility duration for the message.
+func (b *BatchHandler) getVisibility(e *events.SQSMessage) (int32, error) {
 	att, ok := e.Attributes["ApproximateReceiveCount"]
 	d, err := strconv.Atoi(att)
-	if !ok || err != nil {
+	if !ok || err != nil || d < 1 {
 		errParse := errors.New("unable to parse attribute `ApproximateReceiveCount`")
 		return 0, errors.Join(errParse, err)
 	}
-	nVis := b.calculateBackoff(float64(d))
-	return nVis, nil
-}
-
-/*
-Calculates an exponential backoff based on the values configured
-in BackoffSettings and how many delivery attempts have occurred,
-then adds in jitter in the range set in BackoffSettings.RandFactor.
-Based on `https://github.com/cenkalti/backoff/blob/v4/exponential.go#L149`
-*/
-func (b *BatchHandler) calculateBackoff(deliveries float64) int32 {
-	s := b.BackOffSettings
-	bo := int32(float64(s.InitTimeoutSec) * s.Multiplier * deliveries)
-
-	if s.RandFactor > 0 {
-		d := s.RandFactor * float64(bo)
-		min := float64(bo) - d
-		max := float64(bo) + d
-		bo = int32(min + (rand.Float64() * (max - min + 1)))
-	}
-
-	if s.MaxTimeoutSec < bo {
-		return s.MaxTimeoutSec
-	}
-	return bo
+	newVisibility := int32(b.BackOff.calculateBackOff(float64(d)))
+	return newVisibility, nil
 }
 
 // Requests the original SQS queue to change the message's
