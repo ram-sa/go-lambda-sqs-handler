@@ -8,14 +8,16 @@ import (
 
 /*
 BackOff defines values used for calculating a message's exponential
-backoff in case of a transient failure. Each retry attempt will take exponentially longer
-based on the amount of delivery attempts (attribute `ApproximateReceiveCount`) until the
-message is  either delivered or sent to a DLQ, according to the following parameters:
+backoff in case of a transient failure by altering its visibility timeout.
+Each retry attempt will take exponentially longer based on the amount of
+delivery attempts (attribute `ApproximateReceiveCount`) until the
+message is  either delivered or sent to a DLQ, according to the
+following parameters:
 
 # InitTimeoutSec
 
 Defines the initial timeout value for the message, in seconds,
-ranging from 0 to 43200 (12h, the maximum value accepted by AWS)
+ranging from 0 to 43200 (12h, the maximum value accepted by AWS).
 
 # MaxTimeoutSec
 
@@ -55,6 +57,9 @@ For the default values 5, 300, 2.5 and 0.2:
 	7	1220.7031	300 		[240, 360]
 
 Based on `https://github.com/cenkalti/backoff/blob/v4/exponential.go`.
+
+For more information about message visibility, see:
+https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html.
 */
 type BackOff struct {
 	InitTimeoutSec, MaxTimeoutSec uint16
@@ -69,6 +74,8 @@ const (
 	DefaultRandFactor = 0.3
 )
 
+const SQSMaxVisibility = 43200
+
 // NewBackoff creates an instance of BackOff using default values.
 func NewBackOff() BackOff {
 	return BackOff{
@@ -80,7 +87,7 @@ func NewBackOff() BackOff {
 }
 
 /*
-Calculates an exponential backoff based on the values set
+Calculates an exponential backoff using the values set
 in BackOff and how many delivery attempts have occurred:
 
 	initTimeout * multiplier^(deliveries-1)
@@ -92,7 +99,7 @@ Then returns a random value from the interval:
 as long as randFactor > 0.
 
 Based on `https://github.com/cenkalti/backoff/blob/v4/exponential.go#L149`
-with additional, AWS specific constrains.
+with additional, SQS specific constrains.
 */
 func (s *BackOff) calculateBackOff(deliveries float64) uint16 {
 	bo := uint16(float64(s.InitTimeoutSec) * math.Pow(s.Multiplier, deliveries-1))
@@ -108,18 +115,22 @@ func (s *BackOff) calculateBackOff(deliveries float64) uint16 {
 		bo = uint16(min + (rand.Float64() * (max - min + 1)))
 	}
 
+	if bo > SQSMaxVisibility {
+		bo = SQSMaxVisibility
+	}
+
 	return bo
 }
 
-// Ensures values are within acceptable AWS ranges. This function should
+// Ensures values are within acceptable SQS ranges. This function should
 // be called at least once before a call to calculateBackOff.
 func (b *BackOff) validate() {
-	if b.InitTimeoutSec > 43200 {
-		fmt.Println("warning: InitTimeoutSec exceeds AWS maximum. Defaulting to 43200.")
-		b.InitTimeoutSec = 43200
-	} else if b.MaxTimeoutSec > 43200 {
-		fmt.Println("warning: MaxTimeoutSec exceeds AWS maximum. Defaulting to 43200.")
-		b.MaxTimeoutSec = 43200
+	if b.InitTimeoutSec > SQSMaxVisibility {
+		fmt.Printf("warning: InitTimeoutSec exceeds SQS maximum. Defaulting to %v.\n", SQSMaxVisibility)
+		b.InitTimeoutSec = SQSMaxVisibility
+	} else if b.MaxTimeoutSec > SQSMaxVisibility {
+		fmt.Printf("warning: MaxTimeoutSec exceeds SQS maximum. Defaulting to %v.\n", SQSMaxVisibility)
+		b.MaxTimeoutSec = SQSMaxVisibility
 	} else if b.Multiplier < 1 {
 		fmt.Println("warning: Multiplier value smaller than 1. Defaulting to 1.")
 		b.Multiplier = 1
