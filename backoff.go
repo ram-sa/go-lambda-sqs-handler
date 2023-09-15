@@ -36,7 +36,7 @@ Setting this value to 1 will linearize the backoff curve.
 # RandFactor
 
 Adds a jitter factor to the function by making it so
-that the final timeout value ranges in [interval * (± RandFactor)], rounded down.
+that the final timeout value ranges in [interval * (1 ± RandFactor)], rounded down.
 Setting this value to 0 disables it.
 
 # Example
@@ -54,14 +54,14 @@ For the default values 5, 300, 2.5 and 0.2:
 	6	488.28125	300 		[240, 360]
 	7	1220.7031	300 		[240, 360]
 
-Based on `https://github.com/cenkalti/backoff/blob/v4/exponential.go#L149`.
+Based on `https://github.com/cenkalti/backoff/blob/v4/exponential.go`.
 */
 type BackOff struct {
 	InitTimeoutSec, MaxTimeoutSec uint16
 	Multiplier, RandFactor        float64
 }
 
-// BackOff default values for
+// Default values for BackOff.
 const (
 	DefaultIniTimeout = 5
 	DefaultMaxTimeout = 300
@@ -69,7 +69,7 @@ const (
 	DefaultRandFactor = 0.3
 )
 
-// NewBackoff creates an instance of BackOff using default values
+// NewBackoff creates an instance of BackOff using default values.
 func NewBackOff() BackOff {
 	return BackOff{
 		InitTimeoutSec: DefaultIniTimeout,
@@ -80,14 +80,16 @@ func NewBackOff() BackOff {
 }
 
 /*
-Calculates an exponential backoff based on the values configured
-in BackoffSettings and how many delivery attempts have occurred:
+Calculates an exponential backoff based on the values set
+in BackOff and how many delivery attempts have occurred:
 
 	initTimeout * multiplier^(deliveries-1)
 
 Then returns a random value from the interval:
 
 	[timeout - randFactor * timeout, timeout + randFactor * timeout]
+
+as long as randFactor > 0.
 
 Based on `https://github.com/cenkalti/backoff/blob/v4/exponential.go#L149`
 with additional, AWS specific constrains.
@@ -110,7 +112,7 @@ func (s *BackOff) calculateBackOff(deliveries float64) uint16 {
 }
 
 // Ensures values are within acceptable AWS ranges. This function should
-// be called at least once before a call to calculateBackOff
+// be called at least once before a call to calculateBackOff.
 func (b *BackOff) validate() {
 	if b.InitTimeoutSec > 43200 {
 		fmt.Println("warning: InitTimeoutSec exceeds AWS maximum. Defaulting to 43200.")
