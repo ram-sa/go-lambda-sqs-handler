@@ -28,7 +28,7 @@ type SQSClient interface {
 	SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
 }
 
-type HandlerError struct {
+type handlerError struct {
 	MessageId string
 	Error     error
 }
@@ -124,14 +124,14 @@ func workWrapped(c context.Context, msg events.SQSMessage, worker Worker, ch cha
 
 // Process the worker's results and handles them accordingly, returning an SQSEventResponse
 // containing any messages from the batch that need to be reprocessed.
-func (b *BatchHandler) handleResults(results map[Status][]Result) (events.SQSEventResponse, []HandlerError) {
+func (b *BatchHandler) handleResults(results map[Status][]Result) (events.SQSEventResponse, []handlerError) {
 	// If there are no Retries or Failures there's no reason to iterate through the
 	// results, as we can just report a success to the lambda framework.
 	if results[Retry] == nil && results[Failure] == nil {
 		return events.SQSEventResponse{}, nil
 	}
 
-	var hErrs []HandlerError
+	var hErrs []handlerError
 
 	if results[Failure] != nil {
 		hErrs = append(hErrs, b.handleFailures(results[Failure])...)
@@ -150,10 +150,10 @@ func (b *BatchHandler) handleResults(results map[Status][]Result) (events.SQSEve
 
 // Handles transient errors by altering a message's VisibilityTimeout with an
 // exponential backoff value.
-func (b *BatchHandler) handleRetries(results []Result) ([]HandlerError, []events.SQSBatchItemFailure) {
+func (b *BatchHandler) handleRetries(results []Result) ([]handlerError, []events.SQSBatchItemFailure) {
 	s := len(results)
 	items := make([]events.SQSBatchItemFailure, s)
-	var errs []HandlerError
+	var errs []handlerError
 
 	b.BackOff.validate()
 
@@ -166,7 +166,7 @@ func (b *BatchHandler) handleRetries(results []Result) ([]HandlerError, []events
 		}
 
 		if err != nil {
-			errs = append(errs, HandlerError{
+			errs = append(errs, handlerError{
 				MessageId: r.Message.MessageId,
 				Error:     err,
 			})
@@ -178,16 +178,16 @@ func (b *BatchHandler) handleRetries(results []Result) ([]HandlerError, []events
 
 // Handles unrecoverable errors by removing said messages from the queue and sending
 // them to a designated DLQ, if available.
-func (b *BatchHandler) handleFailures(results []Result) []HandlerError {
+func (b *BatchHandler) handleFailures(results []Result) []handlerError {
 	if b.FailureDlqURL == "" {
 		return nil
 	}
 
-	var errs []HandlerError
+	var errs []handlerError
 
 	for _, r := range results {
 		if err := b.sendMessage(r.Message, &b.FailureDlqURL); err != nil {
-			errs = append(errs, HandlerError{
+			errs = append(errs, handlerError{
 				MessageId: r.Message.MessageId,
 				Error:     err,
 			})
