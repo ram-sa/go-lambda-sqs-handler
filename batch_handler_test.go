@@ -11,10 +11,11 @@ import (
 
 type mockSQSClient struct {
 	ReturnErrors                  bool
-	SendInvoked, ChangeVisInvoked int
+	SendInvoked, ChangeVisInvoked *int
 }
 
 func (m mockSQSClient) SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
+	*m.SendInvoked++
 	var err error
 	if m.ReturnErrors {
 		err = errors.New("mocking generic error response")
@@ -22,6 +23,7 @@ func (m mockSQSClient) SendMessage(context.Context, *sqs.SendMessageInput, ...fu
 	return nil, err
 }
 func (m mockSQSClient) ChangeMessageVisibility(context.Context, *sqs.ChangeMessageVisibilityInput, ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error) {
+	*m.ChangeVisInvoked++
 	var err error
 	if m.ReturnErrors {
 		err = errors.New("mocking generic error response")
@@ -63,9 +65,88 @@ func TestWorkWrapped_OnPanic_ReturnsFailedResult(t *testing.T) {
 	}
 }
 
-//newVisibilityVal
+//handleFailures
 
-func TestNewVisibilityVal_NoVisibilityAttribute_ReturnsError(t *testing.T) {
+func TestHandleFailures_NoDLQ_DoNothing(t *testing.T) {
+	c := 0
+	handler := BatchHandler{
+		Context:       context.TODO(),
+		BackOff:       NewBackOff(),
+		FailureDlqURL: "",
+		SQSClient:     mockSQSClient{ReturnErrors: true, SendInvoked: &c},
+	}
+	failures := []Result{{
+		Message: &events.SQSMessage{},
+		Status:  Failure,
+		Error:   errors.New("error"),
+	}}
+
+	err := handler.handleFailures(failures)
+
+	if c > 0 || err != nil {
+		t.Error("attempted to send error message to a DLQ")
+	}
+}
+
+func TestHandleFailures_ErrorOnSend_ReturnHandlingErrors(t *testing.T) {
+	c := 0
+	handler := BatchHandler{
+		Context:       context.TODO(),
+		BackOff:       NewBackOff(),
+		FailureDlqURL: "https://sqs.us-east-2.amazonaws.com/444455556666/queue1",
+		SQSClient:     mockSQSClient{ReturnErrors: true, SendInvoked: &c},
+	}
+	failures := []Result{
+		{
+			Message: &events.SQSMessage{},
+			Status:  Failure,
+			Error:   errors.New("error1"),
+		},
+		{
+			Message: &events.SQSMessage{},
+			Status:  Failure,
+			Error:   errors.New("error2"),
+		},
+	}
+
+	err := handler.handleFailures(failures)
+
+	if c != 2 || len(err) != 2 {
+		t.Error("did not return handling errors")
+	}
+}
+
+func TestHandleFailures_WithDLQ_SendToDLQ(t *testing.T) {
+	c := 0
+	handler := BatchHandler{
+		Context:       context.TODO(),
+		BackOff:       NewBackOff(),
+		FailureDlqURL: "https://sqs.us-east-2.amazonaws.com/444455556666/queue1",
+		SQSClient:     mockSQSClient{SendInvoked: &c},
+	}
+	failures := []Result{
+		{
+			Message: &events.SQSMessage{},
+			Status:  Failure,
+			Error:   errors.New("error1"),
+		},
+		{
+			Message: &events.SQSMessage{},
+			Status:  Failure,
+			Error:   errors.New("error2"),
+		},
+	}
+
+	err := handler.handleFailures(failures)
+
+	if c != 2 || err != nil {
+		t.Error("did not send message to DLQ")
+	}
+}
+
+//getNewVisibility
+
+func TestGetNewVisibility_NoVisibilityAttribute_ReturnsError(t *testing.T) {
 	handler := BatchHandler{
 		Context:       context.TODO(),
 		BackOff:       NewBackOff(),
@@ -74,12 +155,12 @@ func TestNewVisibilityVal_NoVisibilityAttribute_ReturnsError(t *testing.T) {
 	}
 	message := events.SQSMessage{}
 
-	if _, err := handler.getVisibility(&message); err == nil {
+	if _, err := handler.getNewVisibility(&message); err == nil {
 		t.Error("no error on invalid message attribute")
 	}
 }
 
-func TestNewVisibilityVal_UnableToParseVisibilityAttribute_ReturnsError(t *testing.T) {
+func TestGetNewVisibility_UnableToParseVisibilityAttribute_ReturnsError(t *testing.T) {
 	handler := BatchHandler{
 		Context:       context.TODO(),
 		BackOff:       NewBackOff(),
@@ -90,12 +171,12 @@ func TestNewVisibilityVal_UnableToParseVisibilityAttribute_ReturnsError(t *testi
 	message.Attributes = map[string]string{
 		"ApproximateReceiveCount": "invalid",
 	}
-	if _, err := handler.getVisibility(&message); err == nil {
+	if _, err := handler.getNewVisibility(&message); err == nil {
 		t.Error("no error on invalid message attribute")
 	}
 }
 
-func TestNewVisibilityVal_AttributeSmalerThanOne_ReturnsError(t *testing.T) {
+func TestGetNewVisibility_AttributeSmalerThanOne_ReturnsError(t *testing.T) {
 	handler := BatchHandler{
 		Context:       context.TODO(),
 		BackOff:       NewBackOff(),
@@ -106,7 +187,28 @@ func TestNewVisibilityVal_AttributeSmalerThanOne_ReturnsError(t *testing.T) {
 	message.Attributes = map[string]string{
 		"ApproximateReceiveCount": "-1",
 	}
-	if _, err := handler.getVisibility(&message); err == nil {
+	if _, err := handler.getNewVisibility(&message); err == nil {
 		t.Error("no error on invalid message attribute")
+	}
+}
+
+// generateQueueUrl
+
+func TestGenerateQueueUrl_InvalidARNString_ReturnError(t *testing.T) {
+	invalid := "invalid_string"
+	if _, e := generateQueueUrl(invalid); e == nil {
+		t.Error("no error on invalid ARN string")
+	}
+}
+
+func TestGenerateQueueUrl_ValidARNString_ReturnURL(t *testing.T) {
+	invalid := "arn:aws:sqs:us-east-2:444455556666:queue1"
+	s, e := generateQueueUrl(invalid)
+	if e != nil {
+		t.Error("error on valid ARN string")
+	}
+	sVal := *s
+	if sVal != "https://sqs.us-east-2.amazonaws.com/444455556666/queue1" {
+		t.Error("returned invalid URL")
 	}
 }

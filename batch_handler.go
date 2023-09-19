@@ -159,7 +159,7 @@ func (b *BatchHandler) handleRetries(results []Result) ([]handlerError, []events
 
 	for i, r := range results {
 		items[i] = events.SQSBatchItemFailure{ItemIdentifier: r.Message.MessageId}
-		v, err := b.getVisibility(r.Message)
+		v, err := b.getNewVisibility(r.Message)
 
 		if err == nil {
 			err = b.changeVisibility(r.Message, v)
@@ -176,8 +176,7 @@ func (b *BatchHandler) handleRetries(results []Result) ([]handlerError, []events
 	return errs, items
 }
 
-// Handles unrecoverable errors by removing said messages from the queue and sending
-// them to a designated DLQ, if available.
+// Handles unrecoverable errors by sending them to a designated DLQ, if available.
 func (b *BatchHandler) handleFailures(results []Result) []handlerError {
 	if b.FailureDlqURL == "" {
 		return nil
@@ -198,7 +197,7 @@ func (b *BatchHandler) handleFailures(results []Result) []handlerError {
 }
 
 // Retrieves a new visibility duration for the message.
-func (b *BatchHandler) getVisibility(e *events.SQSMessage) (int32, error) {
+func (b *BatchHandler) getNewVisibility(e *events.SQSMessage) (int32, error) {
 	att, ok := e.Attributes["ApproximateReceiveCount"]
 	d, err := strconv.Atoi(att)
 	if !ok || err != nil || d < 1 {
