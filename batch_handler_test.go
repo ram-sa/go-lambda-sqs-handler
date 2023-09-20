@@ -108,7 +108,7 @@ func TestWorkWrapped_OnPanic_ReturnsFailedResult(t *testing.T) {
 //handleResults
 
 func TestHandleResults_MultipleHandlingErrors_AggregateAndReturn(t *testing.T) {
-	handler := BatchHandler{
+	handler := Handler{
 		BackOff:       NewBackOff(),
 		FailureDlqURL: "arn:aws:sqs:us-east-2:444455556666:queue1",
 		SQSClient:     mockSQSClient{ReturnErrors: true},
@@ -136,7 +136,7 @@ func TestHandleResults_MultipleHandlingErrors_AggregateAndReturn(t *testing.T) {
 }
 
 func TestHandleResults_HasRetries_ReturnMessageIds(t *testing.T) {
-	handler := BatchHandler{BackOff: NewBackOff(), SQSClient: mockSQSClient{}}
+	handler := Handler{BackOff: NewBackOff(), SQSClient: mockSQSClient{}}
 	m1 := events.SQSMessage{
 		MessageId:      "id1",
 		EventSourceARN: "arn:aws:sqs:us-east-2:444455556666:queue1",
@@ -162,7 +162,7 @@ func TestHandleResults_HasRetries_ReturnMessageIds(t *testing.T) {
 //handleRetries
 
 func TestHandleRetries_ErrorOnGetNewVisibility_ReturnHandlingErrors(t *testing.T) {
-	handler := BatchHandler{
+	handler := Handler{
 		BackOff: NewBackOff(),
 	}
 	message := events.SQSMessage{MessageId: "id"}
@@ -183,7 +183,7 @@ func TestHandleRetries_ErrorOnGetNewVisibility_ReturnHandlingErrors(t *testing.T
 
 func TestHandleRetries_ErrorOnChangeVisibility_ReturnHandlingErrors(t *testing.T) {
 	c := 0
-	handler := BatchHandler{
+	handler := Handler{
 		BackOff:   NewBackOff(),
 		SQSClient: mockSQSClient{ReturnErrors: true, ChangeVisInvoked: &c},
 	}
@@ -207,7 +207,7 @@ func TestHandleRetries_ErrorOnChangeVisibility_ReturnHandlingErrors(t *testing.T
 
 func TestHandleRetries_VisibilityChanged_ReturnBatchItemEvent(t *testing.T) {
 	c := 0
-	handler := BatchHandler{BackOff: NewBackOff(), SQSClient: mockSQSClient{ChangeVisInvoked: &c}}
+	handler := Handler{BackOff: NewBackOff(), SQSClient: mockSQSClient{ChangeVisInvoked: &c}}
 	m1 := events.SQSMessage{
 		MessageId:      "id1",
 		EventSourceARN: "arn:aws:sqs:us-east-2:444455556666:queue1",
@@ -234,7 +234,7 @@ func TestHandleRetries_VisibilityChanged_ReturnBatchItemEvent(t *testing.T) {
 
 func TestHandleFailures_NoDLQ_DoNothing(t *testing.T) {
 	c := 0
-	handler := BatchHandler{
+	handler := Handler{
 		FailureDlqURL: "",
 		SQSClient:     mockSQSClient{ReturnErrors: true, SendInvoked: &c},
 	}
@@ -253,7 +253,7 @@ func TestHandleFailures_NoDLQ_DoNothing(t *testing.T) {
 
 func TestHandleFailures_ErrorOnSend_ReturnHandlingErrors(t *testing.T) {
 	c := 0
-	handler := BatchHandler{
+	handler := Handler{
 		FailureDlqURL: "https://sqs.us-east-2.amazonaws.com/444455556666/queue1",
 		SQSClient:     mockSQSClient{ReturnErrors: true, SendInvoked: &c},
 	}
@@ -279,7 +279,7 @@ func TestHandleFailures_ErrorOnSend_ReturnHandlingErrors(t *testing.T) {
 
 func TestHandleFailures_WithDLQ_SendToDLQ(t *testing.T) {
 	c := 0
-	handler := BatchHandler{
+	handler := Handler{
 		FailureDlqURL: "https://sqs.us-east-2.amazonaws.com/444455556666/queue1",
 		SQSClient:     mockSQSClient{SendInvoked: &c},
 	}
@@ -306,7 +306,7 @@ func TestHandleFailures_WithDLQ_SendToDLQ(t *testing.T) {
 //getNewVisibility
 
 func TestGetNewVisibility_NoVisibilityAttribute_ReturnsError(t *testing.T) {
-	handler := BatchHandler{
+	handler := Handler{
 		Context:       context.TODO(),
 		BackOff:       NewBackOff(),
 		FailureDlqURL: "",
@@ -320,7 +320,7 @@ func TestGetNewVisibility_NoVisibilityAttribute_ReturnsError(t *testing.T) {
 }
 
 func TestGetNewVisibility_UnableToParseVisibilityAttribute_ReturnsError(t *testing.T) {
-	handler := BatchHandler{
+	handler := Handler{
 		Context:       context.TODO(),
 		BackOff:       NewBackOff(),
 		FailureDlqURL: "",
@@ -336,7 +336,7 @@ func TestGetNewVisibility_UnableToParseVisibilityAttribute_ReturnsError(t *testi
 }
 
 func TestGetNewVisibility_AttributeSmalerThanOne_ReturnsError(t *testing.T) {
-	handler := BatchHandler{
+	handler := Handler{
 		Context:       context.TODO(),
 		BackOff:       NewBackOff(),
 		FailureDlqURL: "",

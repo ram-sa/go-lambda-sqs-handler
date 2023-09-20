@@ -18,7 +18,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
-type BatchHandler struct {
+type Handler struct {
 	BackOff       BackOff
 	Context       context.Context
 	FailureDlqURL string
@@ -41,8 +41,8 @@ New creates an instance of BatchHandler with default values for
 exponential backoff on retries, no DLQ for failed messages and a sqs.Client
 with default configurations.
 */
-func New(c context.Context) *BatchHandler {
-	return &BatchHandler{
+func New(c context.Context) *Handler {
+	return &Handler{
 		BackOff:       NewBackOff(),
 		Context:       c,
 		FailureDlqURL: "",
@@ -57,7 +57,7 @@ func New(c context.Context) *BatchHandler {
 }
 
 // HandleEvent
-func (b *BatchHandler) HandleEvent(event *events.SQSEvent, worker Worker) (events.SQSEventResponse, error) {
+func (b *Handler) HandleEvent(event *events.SQSEvent, worker Worker) (events.SQSEventResponse, error) {
 	len := len(event.Records)
 	ch := make(chan Result, len)
 	results := make(map[Status][]Result)
@@ -125,7 +125,7 @@ func workWrapped(c context.Context, msg events.SQSMessage, worker Worker, ch cha
 
 // Process the worker's results and handles them accordingly, returning an SQSEventResponse
 // containing any messages from the batch that need to be reprocessed.
-func (b *BatchHandler) handleResults(results map[Status][]Result) (events.SQSEventResponse, []handlerError) {
+func (b *Handler) handleResults(results map[Status][]Result) (events.SQSEventResponse, []handlerError) {
 	// If there are no Retries or Failures there's no reason to iterate through the
 	// results, as we can just report a success to the lambda framework.
 	if results[Retry] == nil && results[Failure] == nil {
@@ -151,7 +151,7 @@ func (b *BatchHandler) handleResults(results map[Status][]Result) (events.SQSEve
 
 // Handles transient errors by altering a message's VisibilityTimeout with an
 // exponential backoff value.
-func (b *BatchHandler) handleRetries(results []Result) ([]events.SQSBatchItemFailure, []handlerError) {
+func (b *Handler) handleRetries(results []Result) ([]events.SQSBatchItemFailure, []handlerError) {
 	s := len(results)
 	items := make([]events.SQSBatchItemFailure, s)
 	var errs []handlerError
@@ -178,7 +178,7 @@ func (b *BatchHandler) handleRetries(results []Result) ([]events.SQSBatchItemFai
 }
 
 // Handles unrecoverable errors by sending them to a designated DLQ, if available.
-func (b *BatchHandler) handleFailures(results []Result) []handlerError {
+func (b *Handler) handleFailures(results []Result) []handlerError {
 	if b.FailureDlqURL == "" {
 		return nil
 	}
@@ -198,7 +198,7 @@ func (b *BatchHandler) handleFailures(results []Result) []handlerError {
 }
 
 // Retrieves a new visibility duration for the message.
-func (b *BatchHandler) getNewVisibility(e *events.SQSMessage) (int32, error) {
+func (b *Handler) getNewVisibility(e *events.SQSMessage) (int32, error) {
 	att, ok := e.Attributes["ApproximateReceiveCount"]
 	d, err := strconv.Atoi(att)
 	if !ok || err != nil || d < 1 {
@@ -211,7 +211,7 @@ func (b *BatchHandler) getNewVisibility(e *events.SQSMessage) (int32, error) {
 
 // Requests the original SQS queue to change the message's
 // visibility timeout to the provided value.
-func (b *BatchHandler) changeVisibility(message *events.SQSMessage, newVisibility int32) error {
+func (b *Handler) changeVisibility(message *events.SQSMessage, newVisibility int32) error {
 	url, err := generateQueueUrl(message.EventSourceARN)
 	if err == nil {
 		_, err = b.SQSClient.ChangeMessageVisibility(b.Context, &sqs.ChangeMessageVisibilityInput{
@@ -225,7 +225,7 @@ func (b *BatchHandler) changeVisibility(message *events.SQSMessage, newVisibilit
 }
 
 // Forwards a message to the designated queue
-func (b *BatchHandler) sendMessage(message *events.SQSMessage, url *string) error {
+func (b *Handler) sendMessage(message *events.SQSMessage, url *string) error {
 	_, err := b.SQSClient.SendMessage(b.Context, &sqs.SendMessageInput{
 		MessageBody: &message.Body,
 		MessageAttributes: func(m map[string]events.SQSMessageAttribute) map[string]types.MessageAttributeValue {
