@@ -29,8 +29,10 @@ type Handler struct {
 type SQSClient interface {
 	ChangeMessageVisibility(context.Context, *sqs.ChangeMessageVisibilityInput, ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
 	SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
+	DeleteMessage(context.Context, *sqs.DeleteMessageInput, ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
 }
 
+// Struct used to record errors that may occur while handling messages.
 type handlerError struct {
 	MessageId string
 	Error     error
@@ -67,15 +69,16 @@ func (b *Handler) HandleEvent(event *events.SQSEvent, worker Worker) (events.SQS
 		go workWrapped(b.Context, msg, worker, ch)
 	}
 
+	var err error
 out:
 	for i := 0; i < len; i++ {
 		select {
 		case <-timer.C:
-			fmt.Println(errors.New("the lambda function timed out"))
+			err = errors.New("the lambda function timed out")
 			break out
 		case r := <-ch:
 			// Invalid status are handled as failures
-			if err := r.validate(); err == nil {
+			if vErr := r.validate(); vErr == nil {
 				results[r.Status] = append(results[r.Status], r)
 			} else {
 				if r.Message != nil {
@@ -88,15 +91,18 @@ out:
 			}
 		}
 	}
-
 	timer.Stop()
-	eResp, hErrs := b.handleResults(results)
+
+	// Check if non-retry messages need to be manually deleted from the queue
+	eResp, hErrs := b.handleResults(results, err != nil)
+
 	printReport(event, results, hErrs)
 
-	return eResp, nil
+	return eResp, err
 }
 
-// Starts a timer that will run until the deadline for processing results
+// Starts a timer that will run until 5 seconds before the lambda
+// timeout. These five seconds are reserved for processing results of
 func setTimer(c context.Context) (*time.Timer, time.Time) {
 	deadline, ok := c.Deadline()
 	if !ok {
@@ -124,29 +130,28 @@ func workWrapped(c context.Context, msg events.SQSMessage, worker Worker, ch cha
 }
 
 // Process the worker's results and handles them accordingly, returning an SQSEventResponse
-// containing any messages from the batch that need to be reprocessed.
-func (b *Handler) handleResults(results map[Status][]Result) (events.SQSEventResponse, []handlerError) {
-	// If there are no Retries or Failures there's no reason to iterate through the
-	// results, as we can just report a success to the lambda framework.
-	if results[Retry] == nil && results[Failure] == nil {
-		return events.SQSEventResponse{}, nil
-	}
-
-	var hErrs []handlerError
+// containing any messages from the batch that need to be reprocessed. If cleanUp is set,
+// manually deletes any messages where Status != Retry instead of relying on the returned
+// events.SQSEventResponse.
+func (b *Handler) handleResults(results map[Status][]Result, cleanUp bool) (events.SQSEventResponse, []handlerError) {
+	var res events.SQSEventResponse
+	var errs []handlerError
 
 	if results[Failure] != nil {
-		hErrs = append(hErrs, b.handleFailures(results[Failure])...)
+		errs = append(errs, b.handleFailures(results[Failure])...)
 	}
-
-	var res events.SQSEventResponse
 
 	if results[Retry] != nil {
-		items, errs := b.handleRetries(results[Retry])
+		items, rErrs := b.handleRetries(results[Retry])
 		res.BatchItemFailures = items
-		hErrs = append(hErrs, errs...)
+		errs = append(errs, rErrs...)
 	}
 
-	return res, hErrs
+	if cleanUp {
+		errs = append(errs, b.handleCleanUp(results[Success], results[Skip], results[Failure])...)
+	}
+
+	return res, errs
 }
 
 // Handles transient errors by altering a message's VisibilityTimeout with an
@@ -160,10 +165,14 @@ func (b *Handler) handleRetries(results []Result) ([]events.SQSBatchItemFailure,
 
 	for i, r := range results {
 		items[i] = events.SQSBatchItemFailure{ItemIdentifier: r.Message.MessageId}
-		v, err := b.getNewVisibility(r.Message)
+		vis, err := b.getNewVisibility(r.Message)
 
 		if err == nil {
-			err = b.changeVisibility(r.Message, v)
+			var url *string
+			url, err = generateQueueUrl(r.Message.EventSourceARN)
+			if err == nil {
+				err = b.changeVisibility(r.Message, vis, url)
+			}
 		}
 
 		if err != nil {
@@ -197,6 +206,29 @@ func (b *Handler) handleFailures(results []Result) []handlerError {
 	return errs
 }
 
+// Manually deletes any non-retry message from the queue.
+func (b *Handler) handleCleanUp(results ...[]Result) []handlerError {
+	var errs []handlerError
+
+	for _, s := range results {
+		for _, r := range s {
+			url, err := generateQueueUrl(r.Message.EventSourceARN)
+			if err == nil {
+				err = b.deleteMessage(r.Message, url)
+			}
+
+			if err != nil {
+				errs = append(errs, handlerError{
+					MessageId: r.Message.MessageId,
+					Error:     err,
+				})
+			}
+		}
+	}
+
+	return errs
+}
+
 // Retrieves a new visibility duration for the message.
 func (b *Handler) getNewVisibility(e *events.SQSMessage) (int32, error) {
 	att, ok := e.Attributes["ApproximateReceiveCount"]
@@ -211,15 +243,12 @@ func (b *Handler) getNewVisibility(e *events.SQSMessage) (int32, error) {
 
 // Requests the original SQS queue to change the message's
 // visibility timeout to the provided value.
-func (b *Handler) changeVisibility(message *events.SQSMessage, newVisibility int32) error {
-	url, err := generateQueueUrl(message.EventSourceARN)
-	if err == nil {
-		_, err = b.SQSClient.ChangeMessageVisibility(b.Context, &sqs.ChangeMessageVisibilityInput{
-			QueueUrl:          url,
-			ReceiptHandle:     &message.ReceiptHandle,
-			VisibilityTimeout: newVisibility,
-		})
-	}
+func (b *Handler) changeVisibility(message *events.SQSMessage, newVisibility int32, url *string) error {
+	_, err := b.SQSClient.ChangeMessageVisibility(b.Context, &sqs.ChangeMessageVisibilityInput{
+		QueueUrl:          url,
+		ReceiptHandle:     &message.ReceiptHandle,
+		VisibilityTimeout: newVisibility,
+	})
 
 	return err
 }
@@ -246,7 +275,16 @@ func (b *Handler) sendMessage(message *events.SQSMessage, url *string) error {
 	return err
 }
 
-// Builds a queue URL from its ARN
+// Deletes a message from the queue
+func (b *Handler) deleteMessage(message *events.SQSMessage, url *string) error {
+	_, err := b.SQSClient.DeleteMessage(b.Context, &sqs.DeleteMessageInput{
+		ReceiptHandle: &message.ReceiptHandle,
+		QueueUrl:      url,
+	})
+	return err
+}
+
+// Builds a queue's URL from its ARN
 func generateQueueUrl(queueArn string) (*string, error) {
 	s := strings.Split(queueArn, ":")
 	if len(s) != 6 {
