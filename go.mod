@@ -1,4 +1,4 @@
-module github.com/ram-sa/go-sqs-batch-handler
+module github.com/ram-sa/go-lambda-sqs-handler
 
 go 1.21.0
 

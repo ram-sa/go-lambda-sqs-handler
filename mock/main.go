@@ -14,7 +14,7 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
-	. "github.com/ram-sa/go-sqs-batch-handler"
+	. "github.com/ram-sa/go-lambda-sqs-handler"
 )
 
 // OK TODO rearrange to proper file structure
