@@ -53,11 +53,12 @@ func NewBatchHandler(c context.Context) *BatchHandler {
 	}
 }
 
+// doc :)
 func (b *BatchHandler) HandleEvent(event *events.SQSEvent, worker Worker) (events.SQSEventResponse, error) {
 	len := len(event.Records)
 	ch := make(chan Result, len)
 	results := make(map[Status][]Result)
-	timeout := setTimeout(b.Context)
+	timer, _ := setTimer(b.Context)
 
 	for _, msg := range event.Records {
 		go workWrapped(b.Context, msg, worker, ch)
@@ -66,7 +67,7 @@ func (b *BatchHandler) HandleEvent(event *events.SQSEvent, worker Worker) (event
 out:
 	for i := 0; i < len; i++ {
 		select {
-		case <-timeout:
+		case <-timer.C:
 			fmt.Println(errors.New("the lambda function timed out"))
 			break out
 		case r := <-ch:
@@ -85,17 +86,15 @@ out:
 		}
 	}
 
+	timer.Stop()
 	eResp, hErrs := b.handleResults(results)
 	printReport(event, results, hErrs)
-
-	// for debug
-	fmt.Println(eResp)
 
 	return eResp, nil
 }
 
-// Sets a deadline for processing results
-func setTimeout(c context.Context) <-chan time.Time {
+// Starts a timer that will run until the deadline for processing results
+func setTimer(c context.Context) (*time.Timer, time.Time) {
 	deadline, ok := c.Deadline()
 	if !ok {
 		// Defaults to 15 minutes (lambda max)
@@ -103,8 +102,7 @@ func setTimeout(c context.Context) <-chan time.Time {
 	}
 	// Reserves 5 seconds for processing results
 	deadline = deadline.Add(-5 * time.Second)
-
-	return time.After(time.Until(deadline))
+	return time.NewTimer(time.Until(deadline)), deadline
 }
 
 // Wraps the custom worker function in order to recover from panics
