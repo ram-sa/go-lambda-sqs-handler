@@ -1,4 +1,7 @@
-package handler
+/*
+Package sqshandler implements a
+*/
+package sqshandler
 
 import (
 	"context"
@@ -34,11 +37,11 @@ type handlerError struct {
 }
 
 /*
-NewBatchHandler creates an instance of BatchHandler with default values for
+New creates an instance of BatchHandler with default values for
 exponential backoff on retries, no DLQ for failed messages and a sqs.Client
 with default configurations.
 */
-func NewBatchHandler(c context.Context) *BatchHandler {
+func New(c context.Context) *BatchHandler {
 	return &BatchHandler{
 		BackOff:       NewBackOff(),
 		Context:       c,
@@ -53,7 +56,7 @@ func NewBatchHandler(c context.Context) *BatchHandler {
 	}
 }
 
-// doc :)
+// HandleEvent
 func (b *BatchHandler) HandleEvent(event *events.SQSEvent, worker Worker) (events.SQSEventResponse, error) {
 	len := len(event.Records)
 	ch := make(chan Result, len)

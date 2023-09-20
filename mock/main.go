@@ -50,7 +50,7 @@ func main() {
 
 /**** Uncomment handler when uploading lambda code ****/
 func handleRequest(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEventResponse, error) {
-	handler := NewBatchHandler(ctx)
+	handler := New(ctx)
 	return handler.HandleEvent(&sqsEvent, WorkerTest{})
 }
 
@@ -100,7 +100,7 @@ func simulateEvent() {
 	fmt.Printf("Execution Ceiling (s): %v\n", worker.ExecCeiling-1)
 	fmt.Printf("Messages: %v\n", len(messages))
 
-	b := NewBatchHandler(context.TODO())
+	b := New(context.TODO())
 	r, e := b.HandleEvent(&event, worker)
 	//m, _ := HandleEvent(event, WorkerImp{})
 	//json, _ := json.MarshalIndent(m, "", "\t")

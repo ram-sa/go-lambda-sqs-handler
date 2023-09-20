@@ -1,4 +1,4 @@
-package handler
+package sqshandler
 
 import (
 	"github.com/aws/aws-lambda-go/events"

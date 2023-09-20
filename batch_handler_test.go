@@ -1,4 +1,4 @@
-package handler
+package sqshandler
 
 import (
 	"context"
@@ -38,8 +38,6 @@ func (m mockSQSClient) ChangeMessageVisibility(context.Context, *sqs.ChangeMessa
 }
 
 //HandleEvent
-
-
 
 //setTimer
 
