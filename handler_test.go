@@ -11,16 +11,16 @@ import (
 )
 
 type mockSQSClient struct {
-	ReturnErrors                  bool
-	SendInvoked, ChangeVisInvoked *int
+	returnErrors                                 bool
+	sendInvoked, changeVisInvoked, deleteInvoked *int
 }
 
 func (m mockSQSClient) SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error) {
 	var err error
-	if m.SendInvoked != nil {
-		*m.SendInvoked++
+	if m.sendInvoked != nil {
+		*m.sendInvoked++
 	}
-	if m.ReturnErrors {
+	if m.returnErrors {
 		err = errors.New("mocking generic error response")
 	}
 	return nil, err
@@ -28,16 +28,29 @@ func (m mockSQSClient) SendMessage(context.Context, *sqs.SendMessageInput, ...fu
 
 func (m mockSQSClient) ChangeMessageVisibility(context.Context, *sqs.ChangeMessageVisibilityInput, ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error) {
 	var err error
-	if m.ChangeVisInvoked != nil {
-		*m.ChangeVisInvoked++
+	if m.changeVisInvoked != nil {
+		*m.changeVisInvoked++
 	}
-	if m.ReturnErrors {
+	if m.returnErrors {
+		err = errors.New("mocking generic error response")
+	}
+	return nil, err
+}
+
+func (m mockSQSClient) DeleteMessage(context.Context, *sqs.DeleteMessageInput, ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error) {
+	var err error
+	if m.deleteInvoked != nil {
+		*m.deleteInvoked++
+	}
+	if m.returnErrors {
 		err = errors.New("mocking generic error response")
 	}
 	return nil, err
 }
 
 //HandleEvent
+
+
 
 //setTimer
 
@@ -111,7 +124,7 @@ func TestHandleResults_MultipleHandlingErrors_AggregateAndReturn(t *testing.T) {
 	handler := Handler{
 		BackOff:       NewBackOff(),
 		FailureDlqURL: "arn:aws:sqs:us-east-2:444455556666:queue1",
-		SQSClient:     mockSQSClient{ReturnErrors: true},
+		SQSClient:     mockSQSClient{returnErrors: true},
 	}
 	m1 := events.SQSMessage{
 		MessageId:      "id1",
@@ -128,7 +141,7 @@ func TestHandleResults_MultipleHandlingErrors_AggregateAndReturn(t *testing.T) {
 		Failure: {{Message: &m2, Status: Failure}},
 	}
 
-	_, err := handler.handleResults(results)
+	_, err := handler.handleResults(results, false)
 
 	if len(err) < 2 {
 		t.Error("did not aggregate handling errors")
@@ -152,10 +165,31 @@ func TestHandleResults_HasRetries_ReturnMessageIds(t *testing.T) {
 		Failure: {{Message: &m2, Status: Failure}},
 	}
 
-	event, err := handler.handleResults(results)
+	event, err := handler.handleResults(results, false)
 
 	if err != nil || len(event.BatchItemFailures) != 1 {
 		t.Error("did not return message ids")
+	}
+}
+
+func TestHandleResults_CleanUpSet_DeleteWhenStatusNotRetry(t *testing.T) {
+	c := 0
+
+	handler := Handler{
+		BackOff:       NewBackOff(),
+		FailureDlqURL: "arn:aws:sqs:us-east-2:444455556666:queue1",
+		SQSClient:     mockSQSClient{deleteInvoked: &c},
+	}
+	results := map[Status][]Result{
+		Retry:   {{Status: Retry, Message: &events.SQSMessage{MessageId: "id1", EventSourceARN: "arn:aws:sqs:us-east-2:444455556666:queue1", Attributes: map[string]string{"ApproximateReceiveCount": "1"}}}},
+		Failure: {{Status: Failure, Message: &events.SQSMessage{MessageId: "id2", EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue2"}}},
+		Skip:    {{Status: Skip, Message: &events.SQSMessage{MessageId: "id3", EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue1"}}},
+		Success: {{Status: Success, Message: &events.SQSMessage{MessageId: "id4", EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue2"}}},
+	}
+
+	event, _ := handler.handleResults(results, true)
+	if len(event.BatchItemFailures) != 1 || c != 3 {
+		t.Error("cleanup did not only delete messages with status != Retry")
 	}
 }
 
@@ -185,7 +219,7 @@ func TestHandleRetries_ErrorOnChangeVisibility_ReturnHandlingErrors(t *testing.T
 	c := 0
 	handler := Handler{
 		BackOff:   NewBackOff(),
-		SQSClient: mockSQSClient{ReturnErrors: true, ChangeVisInvoked: &c},
+		SQSClient: mockSQSClient{returnErrors: true, changeVisInvoked: &c},
 	}
 	message := events.SQSMessage{
 		MessageId:      "id",
@@ -207,7 +241,7 @@ func TestHandleRetries_ErrorOnChangeVisibility_ReturnHandlingErrors(t *testing.T
 
 func TestHandleRetries_VisibilityChanged_ReturnBatchItemEvent(t *testing.T) {
 	c := 0
-	handler := Handler{BackOff: NewBackOff(), SQSClient: mockSQSClient{ChangeVisInvoked: &c}}
+	handler := Handler{BackOff: NewBackOff(), SQSClient: mockSQSClient{changeVisInvoked: &c}}
 	m1 := events.SQSMessage{
 		MessageId:      "id1",
 		EventSourceARN: "arn:aws:sqs:us-east-2:444455556666:queue1",
@@ -236,7 +270,7 @@ func TestHandleFailures_NoDLQ_DoNothing(t *testing.T) {
 	c := 0
 	handler := Handler{
 		FailureDlqURL: "",
-		SQSClient:     mockSQSClient{ReturnErrors: true, SendInvoked: &c},
+		SQSClient:     mockSQSClient{returnErrors: true, sendInvoked: &c},
 	}
 	failures := []Result{{
 		Message: &events.SQSMessage{},
@@ -255,7 +289,7 @@ func TestHandleFailures_ErrorOnSend_ReturnHandlingErrors(t *testing.T) {
 	c := 0
 	handler := Handler{
 		FailureDlqURL: "https://sqs.us-east-2.amazonaws.com/444455556666/queue1",
-		SQSClient:     mockSQSClient{ReturnErrors: true, SendInvoked: &c},
+		SQSClient:     mockSQSClient{returnErrors: true, sendInvoked: &c},
 	}
 	failures := []Result{
 		{
@@ -281,7 +315,7 @@ func TestHandleFailures_WithDLQ_SendToDLQ(t *testing.T) {
 	c := 0
 	handler := Handler{
 		FailureDlqURL: "https://sqs.us-east-2.amazonaws.com/444455556666/queue1",
-		SQSClient:     mockSQSClient{SendInvoked: &c},
+		SQSClient:     mockSQSClient{sendInvoked: &c},
 	}
 	failures := []Result{
 		{
@@ -300,6 +334,35 @@ func TestHandleFailures_WithDLQ_SendToDLQ(t *testing.T) {
 
 	if c != 2 || err != nil {
 		t.Error("did not send message to DLQ")
+	}
+}
+
+//handleCleanUp
+
+func TestHandleCleanup_ErrorOnSend_ReturnHandlingErrors(t *testing.T) {
+	handler := Handler{
+		FailureDlqURL: "https://sqs.us-east-2.amazonaws.com/444455556666/queue1",
+		SQSClient:     mockSQSClient{returnErrors: true},
+	}
+	failures := []Result{
+		{
+			Message: &events.SQSMessage{},
+			Status:  Failure,
+			Error:   errors.New("error1"),
+		},
+		{
+			Message: &events.SQSMessage{},
+			Status:  Failure,
+			Error:   errors.New("error2"),
+		},
+	}
+
+	skips := []Result{{Status: Skip, Message: &events.SQSMessage{}}}
+
+	err := handler.handleCleanUp(failures, skips)
+
+	if len(err) != 3 {
+		t.Error("did not return handling errors")
 	}
 }
 
