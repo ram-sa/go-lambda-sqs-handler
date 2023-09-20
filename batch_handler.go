@@ -140,17 +140,17 @@ func (b *BatchHandler) handleResults(results map[Status][]Result) (events.SQSEve
 	var res events.SQSEventResponse
 
 	if results[Retry] != nil {
-		rHErrs, items := b.handleRetries(results[Retry])
+		items, errs := b.handleRetries(results[Retry])
 		res.BatchItemFailures = items
-		hErrs = append(hErrs, rHErrs...)
+		hErrs = append(hErrs, errs...)
 	}
 
-	return res, hErrs //, err
+	return res, hErrs
 }
 
 // Handles transient errors by altering a message's VisibilityTimeout with an
 // exponential backoff value.
-func (b *BatchHandler) handleRetries(results []Result) ([]handlerError, []events.SQSBatchItemFailure) {
+func (b *BatchHandler) handleRetries(results []Result) ([]events.SQSBatchItemFailure, []handlerError) {
 	s := len(results)
 	items := make([]events.SQSBatchItemFailure, s)
 	var errs []handlerError
@@ -173,7 +173,7 @@ func (b *BatchHandler) handleRetries(results []Result) ([]handlerError, []events
 		}
 	}
 
-	return errs, items
+	return items, errs
 }
 
 // Handles unrecoverable errors by sending them to a designated DLQ, if available.
