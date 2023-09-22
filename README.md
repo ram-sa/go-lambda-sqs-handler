@@ -1,5 +1,6 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/ram-sa/go-lambda-sqs-handler#Handler.svg)](https://pkg.go.dev/github.com/ram-sa/go-lambda-sqs-handler#Handler)
 [![Go Report Card](https://goreportcard.com/badge/github.com/ram-sa/go-lambda-sqs-handler)](https://goreportcard.com/report/github.com/ram-sa/go-lambda-sqs-handler)
+[![codecov](https://codecov.io/gh/ram-sa/go-lambda-sqs-handler/graph/badge.svg?token=NJPAYWZC1B)](https://codecov.io/gh/ram-sa/go-lambda-sqs-handler)
 
 # go-lambda-sqs-handler
 A lightweight wrapper for handling SQS Events inside 
