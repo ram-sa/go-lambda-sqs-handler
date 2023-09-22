@@ -6,7 +6,6 @@ require (
 	github.com/aws/aws-lambda-go v1.41.0
 	github.com/aws/aws-sdk-go-v2/config v1.18.39
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.24.5
-	gopkg.in/go-playground/validator.v9 v9.31.0
 )
 
 require (
@@ -21,8 +20,5 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.15.6 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.21.5 // indirect
 	github.com/aws/smithy-go v1.14.2 // indirect
-	github.com/go-playground/locales v0.14.1 // indirect
-	github.com/go-playground/universal-translator v0.18.1 // indirect
-	github.com/leodido/go-urn v1.2.4 // indirect
-	gopkg.in/go-playground/assert.v1 v1.2.1 // indirect
+	github.com/stretchr/testify v1.8.2 // indirect
 )

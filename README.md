@@ -78,6 +78,4 @@ func handleRequest(ctx context.Context, sqsEvent events.SQSEvent) (events.SQSEve
 	return handler.HandleEvent(&sqsEvent, worker)
 }
 ```
-
-
-For more information, check the docs at  https://pkg.go.dev/github.com/ram-sa/go-lambda-sqs-handler
+For more information on how this package works and how it interacts with the Lambda framework, check the docs at  https://pkg.go.dev/github.com/ram-sa/go-lambda-sqs-handler

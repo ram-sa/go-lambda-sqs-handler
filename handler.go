@@ -1,5 +1,7 @@
 /*
-Package sqshandler implements a
+Package sqshandler implements a lightweight wrapper for handling SQS Events inside
+Lambda functions, reducing the complexity of dealing with different and sometimes
+unexpected conditions to a set of defined results in a work-based abstraction.
 */
 package sqshandler
 
@@ -18,6 +20,48 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
+/*
+Handler functions as a configurable wrapper of an SQS Event, letting you control
+some of the behaviors related to a message's lifetime inside the queue.
+
+# BackOff
+
+[BackOff] configures the exponential backoff values of
+retried messages.
+
+# Context
+
+The Lambda's [context.Context]. Note that if this context has an invalid Deadline,
+such as in a [context.TODO], Lambda's default of 15 minutes will be considered by the
+Handler as the ceiling for execution.
+
+# FailureDlqURL
+
+This property is optional.
+
+The URL of a DLQ to which messages with a [Status] of FAILURE will be sent to. This can be
+the original queue's own DLQ, or a separate one. Make sure that your Lambda has an [execution role]
+with enough permissions to write to said queue.
+
+# SQSClient
+
+A properly configured [sqs.Client], which will be used by the Handler to interface with
+the queue.
+
+# Configuring parallelism and number of retries
+
+By design, a Handler will process all messages in a batch in parallel. Thus, the
+degree of parallelism can be controlled by altering the property [Batch Size]
+of your Lambda's trigger.
+
+In much the same way, the amount of retries is tied to your queue's [Max Receive Count]
+property, which defines how many delivery attempts will be made on a single message until
+it is moved to a DLQ. For more information, see:
+
+[execution role]: https://docs.aws.amazon.com/lambda/latest/dg/lambda-intro-execution-role.html
+[Batch Size]: https://docs.aws.amazon.com/lambda/latest/dg/with-sqs.html#events-sqs-scaling
+[Max Receive Count]: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html
+*/
 type Handler struct {
 	BackOff       BackOff
 	Context       context.Context
@@ -25,11 +69,18 @@ type Handler struct {
 	SQSClient     SQSClient
 }
 
-// Interface to enable mocking of a SQSClient, usually for testing purposes
+// Interface to enable mocking of a SQSClient, usually for testing purposes.
 type SQSClient interface {
 	ChangeMessageVisibility(context.Context, *sqs.ChangeMessageVisibilityInput, ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
 	SendMessage(context.Context, *sqs.SendMessageInput, ...func(*sqs.Options)) (*sqs.SendMessageOutput, error)
 	DeleteMessage(context.Context, *sqs.DeleteMessageInput, ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
+}
+
+// Struct used to aggregate the processing state of a message, as returned by a Worker.
+type result struct {
+	message *events.SQSMessage
+	status  Status `validate:"oneof=FAILURE RETRY SKIP SUCCESS"`
+	err     error
 }
 
 // Struct used to record errors that may occur while handling messages.
@@ -39,9 +90,15 @@ type handlerError struct {
 }
 
 /*
-New creates an instance of BatchHandler with default values for
-exponential backoff on retries, no DLQ for failed messages and a sqs.Client
-with default configurations.
+New creates an instance of [Handler] with default [BackOff] values
+on retries, no DLQ set for messages with a [Status] of FAILURE and a [sqs.Client]
+with default configurations, as per the following:
+
+	cfg, err := config.LoadDefaultConfig(c)
+	if err != nil {
+		log.Fatalf("unable to load SDK config, %v", err)
+	}
+	return sqs.NewFromConfig(cfg)
 */
 func New(c context.Context) *Handler {
 	return &Handler{
@@ -58,11 +115,110 @@ func New(c context.Context) *Handler {
 	}
 }
 
-// HandleEvent
+/*
+HandleEvent is, as the name implies, the method called for handling an
+[events.SQSEvent]. It works by separating the event into processable
+messages which will then be given to a user defined [Worker].
+After all messages have been processed, a [Report] will be printed to
+stdout detailing their [Status] and any errors that may have occurred.
+
+# Handling Messages
+
+[event.SQSMessage]s inside the [events.SQSEvent] will be delivered
+as they are to the [Worker] for processing, in parallel. The Handler
+will wait for a [Status] callback for all messages up until 5 seconds
+before the Lambda's configured [timeout]. After that, any message which
+is still being processed will be ignored and returned to the queue
+with their default [VisibilityTimeout] value. If any [Worker] panics
+during execution, the Handler will consider that it failed to process
+the message, and assign it such [Status] itself.
+
+At this point, all possible messages should be in one of the four
+states defined by [Status]. Any property that deviates from those 4
+will be treated as a [Status.FAILURE], regardless if the message
+was successfully processed or not, with an appended error describing
+the issue.
+
+# Reporting to the Lambda framework
+
+While the Lambda framework accepts quite a few [handler signatures],
+this Handler requires the use of
+
+	func (context.Context, TIn) (TOut, error)
+
+as we will be reporting any messages that we want to retry in a
+[events.SQSEventResponse] in order to avoid unnecessary
+calls to the SQS API.
+
+With this option, the framework behaves differently depending on which
+kind of response is given after execution. We will be focusing on 3
+specific kinds (the complete list can be found [here]):
+ 1. Empty [events.SQSEventResponse], no error
+ 2. Populated [events.SQSEventResponse], no error
+ 3. Anything, error
+
+These 3 responses will be utilized in different scenarios, which
+will vary depending on the [Status] reported by your [Worker]:
+
+  - If all messages were reported as [Status.SUCCESS], [Status.SKIP]
+    or [Status.FAILURE] response number 1 will be used for the Lambda,
+    signaling the framework that all messages were processed successfully
+    and can be deleted from the queue. Failed messages will be reported
+    as such by the Handler and sent to a DLQ, if one was configured.
+    This response was chosen for failures due to how the framework
+    interprets errors, which will be explained later.
+  - If any message was reported as [Status.RETRY], then response number
+    2 will be used, where [events.SQSEventResponse] will contain the
+    ids of all messages that need reprocessing.
+  - If the Lambda reached a timeout, then response number 3 will be used,
+    and the Handler will behave a bit differently, due to how the framework
+    deals with errors.
+
+Which brings us to the next point:
+
+# Reporting Errors
+
+If any error reaches the Lambda framework, it will consider the execution
+as having completely failed and any and all messages that were delivered
+will be returned to the queue with their default [VisibilityTimeout].
+
+Thus, even if your [Worker] returns an error on a [Status.FAILURE], it
+will not be reported directly to the Lambda framework, as doing so would
+mean that all messages, including successfully processed ones, would be
+returned to the queue. These errors will still show up during logging,
+as they are printed to stdout in the [Report].
+
+On a timeout, however, the Handler doesn't know how to proceed with the
+messages that didn't report back. Thus, the best idea is to return them
+to the queue as they were, where they will follow the redelivery pattern
+until the problem is fixed or they are naturally sent to a DLQ. Note,
+however, that in order to ensure that only these messages will be returned,
+the Handler will have to MANUALLY DELETE every message with a [Status] of
+SUCCESS, SKIP and FAILURE from the queue.
+
+# Handler Errors
+
+When dealing with messages, the Handler will perform a few checks and make
+calls to the SQS API (like [SendMessage] for sending failures to a DLQ and
+[ChangeMessageVisibility] for exponential backoff on retries). If any of
+these fail, they will be reported at the end of execution. Statuses will
+try to be preserved as much as possible. Failures will still be removed
+from the queue in order to avoid queue-poisoning and Retries will still be
+sent back, only with their [VisibilityTimeout] unchanged. Note that these
+behaviors are open to debate, so feel free to reach out with your thoughts
+on the matter.
+
+[timeout]: https://docs.aws.amazon.com/lambda/latest/dg/configuration-function-common.html#configuration-timeout-console
+[VisibilityTimeout]: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html
+[handler signatures]: https://docs.aws.amazon.com/lambda/latest/dg/golang-handler.html
+[here]: https://repost.aws/knowledge-center/lambda-sqs-report-batch-item-failures
+[SendMessage]: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_SendMessage.html
+[ChangeMessageVisibility]: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_ChangeMessageVisibility.html
+*/
 func (b *Handler) HandleEvent(event *events.SQSEvent, worker Worker) (events.SQSEventResponse, error) {
 	len := len(event.Records)
-	ch := make(chan Result, len)
-	results := make(map[Status][]Result)
+	ch := make(chan result, len)
+	results := make(map[Status][]result)
 	timer, _ := setTimer(b.Context)
 
 	for _, msg := range event.Records {
@@ -77,18 +233,7 @@ out:
 			err = errors.New("the lambda function timed out")
 			break out
 		case r := <-ch:
-			// Invalid status are handled as failures
-			if vErr := r.validate(); vErr == nil {
-				results[r.Status] = append(results[r.Status], r)
-			} else {
-				if r.Message != nil {
-					r.Error = errors.Join(r.Error, fmt.Errorf("invalid status property `%v`", r.Status))
-					r.Status = Failure
-					results[r.Status] = append(results[r.Status], r)
-				} else {
-					fmt.Println(errors.New("worker did not return a valid message"))
-				}
-			}
+			results[r.status] = append(results[r.status], r)
 		}
 	}
 	timer.Stop()
@@ -101,39 +246,11 @@ out:
 	return eResp, err
 }
 
-// Starts a timer that will run until 5 seconds before the lambda
-// timeout. These five seconds are reserved for processing results of
-func setTimer(c context.Context) (*time.Timer, time.Time) {
-	deadline, ok := c.Deadline()
-	if !ok {
-		// Defaults to 15 minutes (lambda max)
-		deadline = time.Now().Add(15 * time.Minute)
-	}
-	// Reserves 5 seconds for processing results
-	deadline = deadline.Add(-5 * time.Second)
-	return time.NewTimer(time.Until(deadline)), deadline
-}
-
-// Wraps the custom worker function in order to recover from panics
-func workWrapped(c context.Context, msg events.SQSMessage, worker Worker, ch chan<- Result) {
-	defer func(ch chan<- Result) {
-		if r := recover(); r != nil {
-			err := fmt.Errorf("worker panic:\n%v", r)
-			ch <- Result{
-				Message: &msg,
-				Status:  Failure,
-				Error:   err,
-			}
-		}
-	}(ch)
-	ch <- worker.Work(c, msg)
-}
-
-// Process the worker's results and handles them accordingly, returning an SQSEventResponse
+// Process the worker's results and handles them accordingly, returning a SQSEventResponse
 // containing any messages from the batch that need to be reprocessed. If cleanUp is set,
 // manually deletes any messages where Status != Retry instead of relying on the returned
 // events.SQSEventResponse.
-func (b *Handler) handleResults(results map[Status][]Result, cleanUp bool) (events.SQSEventResponse, []handlerError) {
+func (b *Handler) handleResults(results map[Status][]result, cleanUp bool) (events.SQSEventResponse, []handlerError) {
 	var res events.SQSEventResponse
 	var errs []handlerError
 
@@ -156,7 +273,7 @@ func (b *Handler) handleResults(results map[Status][]Result, cleanUp bool) (even
 
 // Handles transient errors by altering a message's VisibilityTimeout with an
 // exponential backoff value.
-func (b *Handler) handleRetries(results []Result) ([]events.SQSBatchItemFailure, []handlerError) {
+func (b *Handler) handleRetries(results []result) ([]events.SQSBatchItemFailure, []handlerError) {
 	s := len(results)
 	items := make([]events.SQSBatchItemFailure, s)
 	var errs []handlerError
@@ -164,20 +281,20 @@ func (b *Handler) handleRetries(results []Result) ([]events.SQSBatchItemFailure,
 	b.BackOff.validate()
 
 	for i, r := range results {
-		items[i] = events.SQSBatchItemFailure{ItemIdentifier: r.Message.MessageId}
-		vis, err := b.getNewVisibility(r.Message)
+		items[i] = events.SQSBatchItemFailure{ItemIdentifier: r.message.MessageId}
+		vis, err := b.getNewVisibility(r.message)
 
 		if err == nil {
 			var url *string
-			url, err = generateQueueUrl(r.Message.EventSourceARN)
+			url, err = generateQueueUrl(r.message.EventSourceARN)
 			if err == nil {
-				err = b.changeVisibility(r.Message, vis, url)
+				err = b.changeVisibility(r.message, vis, url)
 			}
 		}
 
 		if err != nil {
 			errs = append(errs, handlerError{
-				MessageId: r.Message.MessageId,
+				MessageId: r.message.MessageId,
 				Error:     err,
 			})
 		}
@@ -187,7 +304,7 @@ func (b *Handler) handleRetries(results []Result) ([]events.SQSBatchItemFailure,
 }
 
 // Handles unrecoverable errors by sending them to a designated DLQ, if available.
-func (b *Handler) handleFailures(results []Result) []handlerError {
+func (b *Handler) handleFailures(results []result) []handlerError {
 	if b.FailureDlqURL == "" {
 		return nil
 	}
@@ -195,9 +312,9 @@ func (b *Handler) handleFailures(results []Result) []handlerError {
 	var errs []handlerError
 
 	for _, r := range results {
-		if err := b.sendMessage(r.Message, &b.FailureDlqURL); err != nil {
+		if err := b.sendMessage(r.message, &b.FailureDlqURL); err != nil {
 			errs = append(errs, handlerError{
-				MessageId: r.Message.MessageId,
+				MessageId: r.message.MessageId,
 				Error:     err,
 			})
 		}
@@ -207,19 +324,19 @@ func (b *Handler) handleFailures(results []Result) []handlerError {
 }
 
 // Manually deletes any non-retry message from the queue.
-func (b *Handler) handleCleanUp(results ...[]Result) []handlerError {
+func (b *Handler) handleCleanUp(results ...[]result) []handlerError {
 	var errs []handlerError
 
 	for _, s := range results {
 		for _, r := range s {
-			url, err := generateQueueUrl(r.Message.EventSourceARN)
+			url, err := generateQueueUrl(r.message.EventSourceARN)
 			if err == nil {
-				err = b.deleteMessage(r.Message, url)
+				err = b.deleteMessage(r.message, url)
 			}
 
 			if err != nil {
 				errs = append(errs, handlerError{
-					MessageId: r.Message.MessageId,
+					MessageId: r.message.MessageId,
 					Error:     err,
 				})
 			}
@@ -282,6 +399,39 @@ func (b *Handler) deleteMessage(message *events.SQSMessage, url *string) error {
 		QueueUrl:      url,
 	})
 	return err
+}
+
+// Starts a timer that will run until 5 seconds before the lambda
+// timeout. These five seconds are reserved for processing results of
+func setTimer(c context.Context) (*time.Timer, time.Time) {
+	deadline, ok := c.Deadline()
+	if !ok {
+		// Defaults to 15 minutes (lambda max)
+		deadline = time.Now().Add(15 * time.Minute)
+	}
+	// Reserves 5 seconds for processing results
+	deadline = deadline.Add(-5 * time.Second)
+	return time.NewTimer(time.Until(deadline)), deadline
+}
+
+// Wraps the custom worker function in order to recover from panics
+func workWrapped(c context.Context, msg events.SQSMessage, worker Worker, ch chan<- result) {
+	defer func(ch chan<- result) {
+		if r := recover(); r != nil {
+			err := fmt.Errorf("worker panic:\n%v", r)
+			ch <- result{&msg, Failure, err}
+		}
+	}(ch)
+
+	s, e := worker.Work(c, msg)
+
+	// Invalid status are handled as failures
+	if !s.isValid() {
+		e = errors.Join(e, fmt.Errorf("invalid status property `%v`", s))
+		s = Failure
+	}
+
+	ch <- result{&msg, s, e}
 }
 
 // Builds a queue's URL from its ARN

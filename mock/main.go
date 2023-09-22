@@ -26,19 +26,19 @@ import (
 
 type WorkerTest struct{}
 
-func (w WorkerTest) Work(c context.Context, m events.SQSMessage) Result {
+func (w WorkerTest) Work(c context.Context, m events.SQSMessage) (Status, error) {
 	switch m.Body {
 	case "Failure":
-		return Result{Message: &m, Status: Failure, Error: errors.New("some error")}
+		return Failure, errors.New("some error")
 	case "Retry":
-		return Result{Message: &m, Status: Retry, Error: errors.New("some transient error")}
+		return Retry, errors.New("some transient error")
 	case "Skip":
-		return Result{Message: &m, Status: Skip}
+		return Skip, nil
 	case "Timeout":
 		time.Sleep(time.Second * 11)
-		return Result{Message: &m, Status: Success}
+		return Success, nil
 	default:
-		return Result{Message: &m, Status: Success}
+		return Success, nil
 	}
 }
 
@@ -122,7 +122,7 @@ type WorkerImp struct {
 
 // Simulates some work and generates a randomized [Report] value,
 // including an error if the value is "Failure".
-func (w WorkerImp) Work(c context.Context, m events.SQSMessage) Result {
+func (w WorkerImp) Work(c context.Context, m events.SQSMessage) (Status, error) {
 	reports := []Status{Failure, Skip, Success}
 	r := reports[rand.Intn(len(reports))]
 	var e error = nil
@@ -131,5 +131,5 @@ func (w WorkerImp) Work(c context.Context, m events.SQSMessage) Result {
 	}
 	sDur := rand.Intn(w.ExecCeiling)
 	time.Sleep(time.Second * time.Duration(sDur))
-	return Result{Message: &m, Status: r, Error: e}
+	return r, e
 }

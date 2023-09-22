@@ -86,7 +86,7 @@ func TestSetTimer_ReserveFiveSeconds(t *testing.T) {
 
 type panicker struct{}
 
-func (panicker) Work(c context.Context, msg events.SQSMessage) Result {
+func (panicker) Work(c context.Context, msg events.SQSMessage) (Status, error) {
 	panic("I'm panicking!")
 }
 
@@ -94,8 +94,8 @@ func TestWorkWrapped_OnPanic_ReturnsFailedResult(t *testing.T) {
 	c := context.TODO()
 	msg := events.SQSMessage{MessageId: "someId"}
 	wkr := panicker{}
-	ch1 := make(chan Result)
-	ch2 := make(chan Result)
+	ch1 := make(chan result)
+	ch2 := make(chan result)
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -109,9 +109,9 @@ func TestWorkWrapped_OnPanic_ReturnsFailedResult(t *testing.T) {
 
 	workWrapped(c, msg, wkr, ch1)
 
-	if r := <-ch2; r.Status != Failure {
-		t.Errorf("worker panicked but status does not denote failure (%v)", r.Status)
-	} else if r.Error == nil {
+	if r := <-ch2; r.status != Failure {
+		t.Errorf("worker panicked but status does not denote failure (%v)", r.status)
+	} else if r.err == nil {
 		t.Error("worker panicked but no error is present on return")
 	}
 }
@@ -134,9 +134,9 @@ func TestHandleResults_MultipleHandlingErrors_AggregateAndReturn(t *testing.T) {
 		EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue2",
 		Attributes:     map[string]string{"ApproximateReceiveCount": "3"},
 	}
-	results := map[Status][]Result{
-		Retry:   {{Message: &m1, Status: Retry}},
-		Failure: {{Message: &m2, Status: Failure}},
+	results := map[Status][]result{
+		Retry:   {{message: &m1, status: Retry}},
+		Failure: {{message: &m2, status: Failure}},
 	}
 
 	_, err := handler.handleResults(results, false)
@@ -158,9 +158,9 @@ func TestHandleResults_HasRetries_ReturnMessageIds(t *testing.T) {
 		EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue2",
 		Attributes:     map[string]string{"ApproximateReceiveCount": "3"},
 	}
-	results := map[Status][]Result{
-		Retry:   {{Message: &m1, Status: Retry}},
-		Failure: {{Message: &m2, Status: Failure}},
+	results := map[Status][]result{
+		Retry:   {{message: &m1, status: Retry}},
+		Failure: {{message: &m2, status: Failure}},
 	}
 
 	event, err := handler.handleResults(results, false)
@@ -178,11 +178,11 @@ func TestHandleResults_CleanUpSet_DeleteWhenStatusNotRetry(t *testing.T) {
 		FailureDlqURL: "arn:aws:sqs:us-east-2:444455556666:queue1",
 		SQSClient:     mockSQSClient{deleteInvoked: &c},
 	}
-	results := map[Status][]Result{
-		Retry:   {{Status: Retry, Message: &events.SQSMessage{MessageId: "id1", EventSourceARN: "arn:aws:sqs:us-east-2:444455556666:queue1", Attributes: map[string]string{"ApproximateReceiveCount": "1"}}}},
-		Failure: {{Status: Failure, Message: &events.SQSMessage{MessageId: "id2", EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue2"}}},
-		Skip:    {{Status: Skip, Message: &events.SQSMessage{MessageId: "id3", EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue1"}}},
-		Success: {{Status: Success, Message: &events.SQSMessage{MessageId: "id4", EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue2"}}},
+	results := map[Status][]result{
+		Retry:   {{status: Retry, message: &events.SQSMessage{MessageId: "id1", EventSourceARN: "arn:aws:sqs:us-east-2:444455556666:queue1", Attributes: map[string]string{"ApproximateReceiveCount": "1"}}}},
+		Failure: {{status: Failure, message: &events.SQSMessage{MessageId: "id2", EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue2"}}},
+		Skip:    {{status: Skip, message: &events.SQSMessage{MessageId: "id3", EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue1"}}},
+		Success: {{status: Success, message: &events.SQSMessage{MessageId: "id4", EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue2"}}},
 	}
 
 	event, _ := handler.handleResults(results, true)
@@ -201,9 +201,9 @@ func TestHandleRetries_ErrorOnGetNewVisibility_ReturnHandlingErrors(t *testing.T
 	message.Attributes = map[string]string{
 		"ApproximateReceiveCount": "invalid",
 	}
-	retries := []Result{{
-		Message: &message,
-		Status:  Retry,
+	retries := []result{{
+		message: &message,
+		status:  Retry,
 	}}
 
 	err, _ := handler.handleRetries(retries)
@@ -226,9 +226,9 @@ func TestHandleRetries_ErrorOnChangeVisibility_ReturnHandlingErrors(t *testing.T
 	message.Attributes = map[string]string{
 		"ApproximateReceiveCount": "1",
 	}
-	retries := []Result{{
-		Message: &message,
-		Status:  Retry,
+	retries := []result{{
+		message: &message,
+		status:  Retry,
 	}}
 
 	err, _ := handler.handleRetries(retries)
@@ -250,9 +250,9 @@ func TestHandleRetries_VisibilityChanged_ReturnBatchItemEvent(t *testing.T) {
 		EventSourceARN: "arn:aws:sqs:us-east-1:444455556666:queue2",
 		Attributes:     map[string]string{"ApproximateReceiveCount": "3"},
 	}
-	retries := []Result{
-		{Message: &m1, Status: Retry},
-		{Message: &m2, Status: Retry},
+	retries := []result{
+		{message: &m1, status: Retry},
+		{message: &m2, status: Retry},
 	}
 
 	event, err := handler.handleRetries(retries)
@@ -270,10 +270,10 @@ func TestHandleFailures_NoDLQ_DoNothing(t *testing.T) {
 		FailureDlqURL: "",
 		SQSClient:     mockSQSClient{returnErrors: true, sendInvoked: &c},
 	}
-	failures := []Result{{
-		Message: &events.SQSMessage{},
-		Status:  Failure,
-		Error:   errors.New("error"),
+	failures := []result{{
+		message: &events.SQSMessage{},
+		status:  Failure,
+		err:     errors.New("error"),
 	}}
 
 	err := handler.handleFailures(failures)
@@ -289,16 +289,16 @@ func TestHandleFailures_ErrorOnSend_ReturnHandlingErrors(t *testing.T) {
 		FailureDlqURL: "https://sqs.us-east-2.amazonaws.com/444455556666/queue1",
 		SQSClient:     mockSQSClient{returnErrors: true, sendInvoked: &c},
 	}
-	failures := []Result{
+	failures := []result{
 		{
-			Message: &events.SQSMessage{},
-			Status:  Failure,
-			Error:   errors.New("error1"),
+			message: &events.SQSMessage{},
+			status:  Failure,
+			err:     errors.New("error1"),
 		},
 		{
-			Message: &events.SQSMessage{},
-			Status:  Failure,
-			Error:   errors.New("error2"),
+			message: &events.SQSMessage{},
+			status:  Failure,
+			err:     errors.New("error2"),
 		},
 	}
 
@@ -315,16 +315,16 @@ func TestHandleFailures_WithDLQ_SendToDLQ(t *testing.T) {
 		FailureDlqURL: "https://sqs.us-east-2.amazonaws.com/444455556666/queue1",
 		SQSClient:     mockSQSClient{sendInvoked: &c},
 	}
-	failures := []Result{
+	failures := []result{
 		{
-			Message: &events.SQSMessage{},
-			Status:  Failure,
-			Error:   errors.New("error1"),
+			message: &events.SQSMessage{},
+			status:  Failure,
+			err:     errors.New("error1"),
 		},
 		{
-			Message: &events.SQSMessage{},
-			Status:  Failure,
-			Error:   errors.New("error2"),
+			message: &events.SQSMessage{},
+			status:  Failure,
+			err:     errors.New("error2"),
 		},
 	}
 
@@ -342,20 +342,20 @@ func TestHandleCleanup_ErrorOnSend_ReturnHandlingErrors(t *testing.T) {
 		FailureDlqURL: "https://sqs.us-east-2.amazonaws.com/444455556666/queue1",
 		SQSClient:     mockSQSClient{returnErrors: true},
 	}
-	failures := []Result{
+	failures := []result{
 		{
-			Message: &events.SQSMessage{},
-			Status:  Failure,
-			Error:   errors.New("error1"),
+			message: &events.SQSMessage{},
+			status:  Failure,
+			err:     errors.New("error1"),
 		},
 		{
-			Message: &events.SQSMessage{},
-			Status:  Failure,
-			Error:   errors.New("error2"),
+			message: &events.SQSMessage{},
+			status:  Failure,
+			err:     errors.New("error2"),
 		},
 	}
 
-	skips := []Result{{Status: Skip, Message: &events.SQSMessage{}}}
+	skips := []result{{status: Skip, message: &events.SQSMessage{}}}
 
 	err := handler.handleCleanUp(failures, skips)
 
@@ -396,7 +396,7 @@ func TestGetNewVisibility_UnableToParseVisibilityAttribute_ReturnsError(t *testi
 	}
 }
 
-func TestGetNewVisibility_AttributeSmalerThanOne_ReturnsError(t *testing.T) {
+func TestGetNewVisibility_AttributeSmallerThanOne_ReturnsError(t *testing.T) {
 	handler := Handler{
 		Context:       context.TODO(),
 		BackOff:       NewBackOff(),

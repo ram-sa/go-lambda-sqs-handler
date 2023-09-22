@@ -10,7 +10,7 @@ import (
 BackOff defines values used for calculating a message's exponential
 backoff in case of a transient failure by altering its visibility timeout.
 Each retry attempt will take exponentially longer based on the amount of
-delivery attempts (attribute `ApproximateReceiveCount`) until the
+delivery attempts (attribute [ApproximateReceiveCount]) until the
 message is  either delivered or sent to a DLQ, according to the
 following parameters:
 
@@ -60,6 +60,8 @@ Based on `https://github.com/cenkalti/backoff/blob/v4/exponential.go`.
 
 For more information about message visibility, see:
 https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-visibility-timeout.html.
+
+[ApproximateReceiveCount]: https://docs.aws.amazon.com/AWSSimpleQueueService/latest/APIReference/API_ReceiveMessage.html#API_ReceiveMessage_RequestSyntax
 */
 type BackOff struct {
 	InitTimeoutSec, MaxTimeoutSec uint16
@@ -74,6 +76,7 @@ const (
 	DefaultRandFactor = 0.3
 )
 
+// SQS maximum value for message visibility
 const SQSMaxVisibility = 43200
 
 // NewBackoff creates an instance of BackOff using default values.

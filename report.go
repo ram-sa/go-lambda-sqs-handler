@@ -48,7 +48,7 @@ type errorReport struct {
 	Error     string `json:"error"`
 }
 
-func printReport(event *events.SQSEvent, results map[Status][]Result, hErrs []handlerError) {
+func printReport(event *events.SQSEvent, results map[Status][]result, hErrs []handlerError) {
 	report := Report{
 		BatchSize:     len(event.Records),
 		Success:       len(results[Success]),
@@ -77,12 +77,12 @@ func printReport(event *events.SQSEvent, results map[Status][]Result, hErrs []ha
 	}
 }
 
-func resultToReport(results []Result) []errorReport {
+func resultToReport(results []result) []errorReport {
 	conv := make([]errorReport, len(results))
 	for i, r := range results {
 		conv[i] = errorReport{
-			MessageId: r.Message.MessageId,
-			Error:     r.Error.Error(),
+			MessageId: r.message.MessageId,
+			Error:     r.err.Error(),
 		}
 	}
 	return conv
