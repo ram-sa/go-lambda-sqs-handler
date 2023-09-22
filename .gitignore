@@ -1,6 +1,9 @@
 # AWS deploy folder
 mock/deploy
 
+# Vscode extension files
+.vscode
+
 # Test binary, built with `go test -c`
 *.test
 
