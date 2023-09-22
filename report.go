@@ -7,7 +7,29 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 )
 
-type workReport struct {
+/*
+Report defines a struct used for serializing and printing an
+execution report of a batch of messages.
+
+# BatchSize
+
+A count of how many [events.SQSMessage] were contained in the [events.SQSEvent]
+
+# Success, Skip
+
+A count of how many messages had a processing [Status] of said values.
+
+# Retry, Failure
+
+A count of how many messages had a processing [Status] of said values, including
+any individual errors reported by either the [Handler] or [Worker].
+
+# HandlerErrors
+
+A collection of errors that occurred during message handling (changing
+visibility, sending to a DLQ, etc.).
+*/
+type Report struct {
 	BatchSize     int                 `json:"batchSize"`
 	Success       int                 `json:"success,omitempty"`
 	Skip          int                 `json:"skip,omitempty"`
@@ -27,7 +49,7 @@ type errorReport struct {
 }
 
 func printReport(event *events.SQSEvent, results map[Status][]Result, hErrs []handlerError) {
-	report := workReport{
+	report := Report{
 		BatchSize:     len(event.Records),
 		Success:       len(results[Success]),
 		Skip:          len(results[Skip]),

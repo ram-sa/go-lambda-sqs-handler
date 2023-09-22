@@ -50,8 +50,6 @@ func (m mockSQSClient) DeleteMessage(context.Context, *sqs.DeleteMessageInput, .
 
 //HandleEvent
 
-
-
 //setTimer
 
 func TestSetTimer_NoDeadlineOnContext_DefaultToFifteen(t *testing.T) {
