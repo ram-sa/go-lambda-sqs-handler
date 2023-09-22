@@ -5,8 +5,8 @@ import "testing"
 //calculateBackOff
 
 func FuzzCalculateBackOff_RespectsUpperBound(f *testing.F) {
-	testcases := []uint16{0, 5, 10, 15, 20}
-	for _, tc := range testcases {
+	testCases := []uint16{0, 5, 10, 15, 20}
+	for _, tc := range testCases {
 		f.Add(tc)
 	}
 	f.Fuzz(func(t *testing.T, v uint16) {
@@ -22,8 +22,8 @@ func FuzzCalculateBackOff_RespectsUpperBound(f *testing.F) {
 }
 
 func FuzzCalculateBackOff_RespectsIfNoJitter(f *testing.F) {
-	testcases := []uint16{0, 5, 10, 15, 20}
-	for _, tc := range testcases {
+	testCases := []uint16{0, 5, 10, 15, 20}
+	for _, tc := range testCases {
 		f.Add(tc)
 	}
 	f.Fuzz(func(t *testing.T, v uint16) {

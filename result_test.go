@@ -6,7 +6,7 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 )
 
-func TestValidade_IfNoMessage_ReturnsError(t *testing.T) {
+func TestValidate_IfNoMessage_ReturnsError(t *testing.T) {
 	testVal := Result{
 		Status: Success,
 	}
@@ -17,8 +17,8 @@ func TestValidade_IfNoMessage_ReturnsError(t *testing.T) {
 }
 
 func FuzzValidate_InvalidStatusString_ReturnsError(f *testing.F) {
-	testcases := []string{"", "\u03b1", "banana", "\n", "_*;/cs\"", "RETRY"}
-	for _, tc := range testcases {
+	testCases := []string{"", "\u03b1", "banana", "\n", "_*;/cs\"", "RETRY"}
+	for _, tc := range testCases {
 		f.Add(tc)
 	}
 

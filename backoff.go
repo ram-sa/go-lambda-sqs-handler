@@ -32,7 +32,7 @@ the values will range from 21600 to 43200 (instead of 64800).
 # Multiplier
 
 Defines the scaling factor of the exponential function. Note that the
-resulting values will be rounded down, as AWS only accepts positive interger values.
+resulting values will be rounded down, as AWS only accepts positive integer values.
 Setting this value to 1 will linearize the backoff curve.
 
 # RandFactor
