@@ -4,25 +4,26 @@ import (
 	"github.com/aws/aws-lambda-go/events"
 	"gopkg.in/go-playground/validator.v9"
 )
+
 /*
-Status defines the four possible states a Worker can report to 
+Status defines the four possible states a Worker can report to
 the [Handler]. These states are:
 
 # SUCCESS
 
-Denotes that the message has been processed succesfully and thus
+Denotes that the message has been processed successfully and thus
 can be safely removed from the queue.
 
 # SKIP
 
-Denotes that the message is not relevant and has thus been skipped. 
+Denotes that the message is not relevant and has thus been skipped.
 Functionally identical to SUCCESS, used for reporting purposes.
 
 # RETRY
 
-Denotes that the message was not processed succesfully due to a
+Denotes that the message was not processed successfully due to a
 transient error. This signals the [Handler] to return the message
-to the queue with an updated `VisibilityTimeout`, following its 
+to the queue with an updated `VisibilityTimeout`, following its
 [Backoff] configuration.
 
 For information about a message's VisibilityTimeout, see:
@@ -30,11 +31,11 @@ https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-v
 
 # FAILURE
 
-Denotes that the message was not processed succesfully due to 
+Denotes that the message was not processed successfully due to
 immutable reasons that cannot be solved by simply retrying the
-operation. This signals the [Handler] to send this message to 
-a DLQ, if one was specified during configuration, and then to 
-remove said message from the queue. 
+operation. This signals the [Handler] to send this message to
+a DLQ, if one was specified during configuration, and then to
+remove said message from the queue.
 */
 type Status string
 
